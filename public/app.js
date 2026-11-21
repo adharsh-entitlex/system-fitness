@@ -1007,9 +1007,8 @@ function openSettings() {
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">BACKUP</h2><div class="line"></div></div>
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
-        Your history is stored in this browser only, under <code>${STORE_KEY}</code>
-        (${storageSizeKb()} KB). Clearing site data or switching devices loses it, so export a
-        backup file and keep it safe.
+        This browser caches your history under <code>${STORE_KEY}</code> (${storageSizeKb()} KB).
+        The server keeps the durable copy — export a backup file now and then as well.
       </p>
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="export-backup">EXPORT BACKUP</button>
@@ -1020,8 +1019,8 @@ function openSettings() {
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">SERVER SYNC</h2><div class="line"></div></div>
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
         <span id="settingsSync">${typeof syncStatusText === 'function' ? syncStatusText() : 'LOCAL ONLY'}</span>.
-        Run <code>npm start</code> and open the app from the server address to keep the record on the backend;
-        every change is pushed automatically. PULL NOW replaces this browser's copy with the server's.
+        Every change is pushed to the server automatically, and the newest copy wins on any device.
+        PULL NOW replaces this browser's copy with the server's.
       </p>
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="sync-push">PUSH NOW</button>

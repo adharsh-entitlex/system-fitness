@@ -1,0 +1,28 @@
+{
+  "packageId": "site.freebuff.thesystem",
+  "host": "the-system-fitness-ehtabh.freebuff.site",
+  "name": "THE SYSTEM",
+  "launcherName": "THE SYSTEM",
+  "display": "standalone",
+  "themeColor": "#05070f",
+  "navigationColor": "#05070f",
+  "navigationColorDark": "#05070f",
+  "navigationDividerColor": "#05070f",
+  "backgroundColor": "#05070f",
+  "enableNotifications": false,
+  "startUrl": "/",
+  "iconUrl": "https://the-system-fitness-ehtabh.freebuff.site/icons/icon-512.png",
+  "maskableIconUrl": "https://the-system-fitness-ehtabh.freebuff.site/icons/icon-maskable-512.png",
+  "webManifestUrl": "https://the-system-fitness-ehtabh.freebuff.site/manifest.webmanifest",
+  "appVersionName": "1.3.0",
+  "appVersionCode": 1,
+  "minSdkVersion": 24,
+  "targetSdkVersion": 37,
+  "orientation": "any",
+  "fallbackType": "customtabs",
+  "features": {},
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "android"
+  }
+}

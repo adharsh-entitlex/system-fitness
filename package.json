@@ -1,14 +1,22 @@
 {
   "name": "system-fitness",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
-  "description": "Solo Leveling inspired personal fitness, hydration and nutrition tracker with a zero-dependency Node backend.",
+  "description": "Solo Leveling inspired personal fitness, hydration and nutrition tracker with an installable PWA shell and a zero-dependency backend.",
   "scripts": {
     "start": "node server/server.mjs",
-    "dev": "node server/server.mjs"
+    "icons": "node scripts/make-icons.mjs",
+    "worker": "wrangler dev"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "wrangler": "^4.166.0"
+  },
+  "allowScripts": {
+    "workerd@1.20261119.1": true,
+    "esbuild@0.28.2": true
   }
 }
