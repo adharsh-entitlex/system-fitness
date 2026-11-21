@@ -44,18 +44,17 @@ jobs:
         run: npm install -g @bubblewrap/cli
 
       # Bubblewrap rejects an SDK root without a top-level `tools` or `bin`
-      # directory and signs with build-tools 36.1.0 specifically, so hand it a
-      # shim that looks the way it expects and points at the real SDK.
+      # directory, and Gradle refuses to start when ANDROID_HOME and the SDK
+      # path Bubblewrap passes disagree — so add `tools` to the real SDK and
+      # point Bubblewrap at that same path.
       - name: Point Bubblewrap at the toolchain
         run: |
-          shim="$HOME/bubblewrap-sdk"
-          mkdir -p "$shim/tools/bin" "$HOME/.bubblewrap"
-          for dir in cmdline-tools platform-tools platforms build-tools licenses; do
-            [ -e "$ANDROID_SDK_ROOT/$dir" ] && ln -sfn "$ANDROID_SDK_ROOT/$dir" "$shim/$dir"
-          done
-          ln -sfn "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "$shim/tools/bin/sdkmanager"
-          printf '{"jdkPath":"%s","androidSdkPath":"%s"}\n' "$JAVA_HOME" "$shim" > "$HOME/.bubblewrap/config.json"
+          sudo mkdir -p "$ANDROID_SDK_ROOT/tools/bin"
+          sudo ln -sfn "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
+          mkdir -p "$HOME/.bubblewrap"
+          printf '{"jdkPath":"%s","androidSdkPath":"%s"}\n' "$JAVA_HOME" "$ANDROID_SDK_ROOT" > "$HOME/.bubblewrap/config.json"
           cat "$HOME/.bubblewrap/config.json"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
 
       - name: Provide the signing key
         id: keystore
