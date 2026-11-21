@@ -1,0 +1,1097 @@
+'use strict';
+
+/* ======================================================================
+   THE SYSTEM — personal fitness & hydration interface
+   Single-page app. Data persists in localStorage.
+   ====================================================================== */
+
+const STORE_KEY = 'system-fitness-v1';
+const DAY_LABELS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+const XP_PER_LEVEL = 500;
+const XP_WORKOUT = 100;
+const XP_WATER = 40;
+const RANKS = ['E', 'E', 'D', 'D', 'C', 'C', 'B', 'B', 'A', 'A', 'S'];
+
+const uid = () => 'w' + Math.random().toString(36).slice(2, 8);
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ---------------- defaults ---------------- */
+
+const DEFAULT_TEMPLATES = [
+  {
+    id: 'push', name: 'PUSH DAY', focus: 'Chest · Shoulders · Triceps',
+    exercises: [
+      { name: 'Bench Press', sets: 4, reps: 8, weight: 60 },
+      { name: 'Overhead Press', sets: 3, reps: 10, weight: 30 },
+      { name: 'Incline Dumbbell Press', sets: 3, reps: 10, weight: 22 },
+      { name: 'Lateral Raise', sets: 3, reps: 15, weight: 8 },
+      { name: 'Triceps Pushdown', sets: 3, reps: 12, weight: 25 }
+    ]
+  },
+  {
+    id: 'pull', name: 'PULL DAY', focus: 'Back · Rear Delts · Biceps',
+    exercises: [
+      { name: 'Deadlift', sets: 4, reps: 5, weight: 90 },
+      { name: 'Lat Pulldown', sets: 3, reps: 10, weight: 45 },
+      { name: 'Barbell Row', sets: 3, reps: 8, weight: 50 },
+      { name: 'Face Pull', sets: 3, reps: 15, weight: 15 },
+      { name: 'Barbell Curl', sets: 3, reps: 12, weight: 20 }
+    ]
+  },
+  {
+    id: 'legs', name: 'LEG DAY', focus: 'Quads · Hamstrings · Calves',
+    exercises: [
+      { name: 'Back Squat', sets: 4, reps: 8, weight: 80 },
+      { name: 'Romanian Deadlift', sets: 3, reps: 10, weight: 60 },
+      { name: 'Leg Press', sets: 3, reps: 12, weight: 100 },
+      { name: 'Leg Curl', sets: 3, reps: 12, weight: 35 },
+      { name: 'Calf Raise', sets: 4, reps: 20, weight: 40 }
+    ]
+  }
+];
+
+function defaultState() {
+  return {
+    hunter: 'Adharsh M',
+    xp: 0,
+    goals: { water: 2500, weekly: 4 },
+    schedule: { 0: null, 1: 'push', 2: 'pull', 3: null, 4: 'legs', 5: 'push', 6: null },
+    templates: JSON.parse(JSON.stringify(DEFAULT_TEMPLATES)),
+    logs: {},
+    water: {},
+    waterBonus: {},
+    meals: {},
+    pantry: DEFAULT_PANTRY.slice(),
+    nutrition: { kcal: 2200, protein: 140 },
+    reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 }
+  };
+}
+
+/* ---------------- persistence ---------------- */
+
+let memoryStore = null;
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return defaultState();
+    const parsed = JSON.parse(raw);
+    const base = defaultState();
+    return {
+      ...base,
+      ...parsed,
+      goals: { ...base.goals, ...(parsed.goals || {}) },
+      reminders: { ...base.reminders, ...(parsed.reminders || {}) },
+      schedule: { ...base.schedule, ...(parsed.schedule || {}) },
+      templates: Array.isArray(parsed.templates) && parsed.templates.length ? parsed.templates : base.templates,
+      logs: parsed.logs || {},
+      water: parsed.water || {},
+      waterBonus: parsed.waterBonus || {},
+      meals: parsed.meals || {},
+      pantry: Array.isArray(parsed.pantry) ? parsed.pantry : DEFAULT_PANTRY.slice(),
+      nutrition: { ...base.nutrition, ...(parsed.nutrition || {}) }
+    };
+  } catch (err) {
+    return memoryStore || defaultState();
+  }
+}
+
+function save() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  } catch (err) {
+    memoryStore = state;
+  }
+}
+
+let state = loadState();
+
+/* ---------------- dates ---------------- */
+
+const pad = (n) => String(n).padStart(2, '0');
+const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const todayKey = () => keyOf(new Date());
+const parseKey = (k) => {
+  const [y, m, d] = String(k).split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+const addDays = (d, n) => {
+  const out = new Date(d);
+  out.setDate(out.getDate() + n);
+  return out;
+};
+const shortDate = (d) => `${DAY_LABELS[d.getDay()]} · ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+
+/* ---------------- derived model ---------------- */
+
+function levelOf(xp) { return 1 + Math.floor(xp / XP_PER_LEVEL); }
+function rankOf(level) { return RANKS[Math.min(level - 1, RANKS.length - 1)]; }
+
+function planFor(key) {
+  const date = parseKey(key);
+  const log = state.logs[key] || null;
+  const schedId = state.schedule[date.getDay()] || null;
+  const templateId = log ? (log.templateId || null) : schedId;
+  const template = state.templates.find((t) => t.id === templateId) || null;
+  const exercises = log ? log.exercises : (template ? template.exercises.map((e) => ({ ...e, done: false })) : []);
+  return { key, date, log, template, exercises, schedId };
+}
+
+function ensureLog(key) {
+  if (!state.logs[key]) {
+    const p = planFor(key);
+    state.logs[key] = {
+      status: 'pending',
+      templateId: p.template ? p.template.id : null,
+      exercises: p.template ? p.template.exercises.map((e) => ({ ...e, done: false })) : [],
+      xpAwarded: false
+    };
+  }
+  return state.logs[key];
+}
+
+function dayState(key) {
+  const p = planFor(key);
+  const today = todayKey();
+  if (p.log && p.log.status === 'completed') return 'done';
+  if (p.log && p.log.status === 'skipped') return 'skip';
+  if (p.template) {
+    if (key === today) return 'pending';
+    return key < today ? 'miss' : 'upcoming';
+  }
+  return 'rest';
+}
+
+function computeStreak() {
+  let streak = 0;
+  const today = new Date();
+  for (let i = 0; i < 400; i++) {
+    const date = addDays(today, -i);
+    const key = keyOf(date);
+    const log = state.logs[key];
+    if (log && log.status === 'completed') { streak++; continue; }
+    if (i === 0) continue; // today never breaks the streak
+    const scheduled = state.schedule[date.getDay()];
+    if (!scheduled) continue; // rest day, neutral
+    return streak;
+  }
+  return streak;
+}
+
+function weekStart() {
+  const d = new Date();
+  return addDays(d, -d.getDay());
+}
+
+function completedThisWeek() {
+  const start = weekStart();
+  let count = 0;
+  for (let i = 0; i < 7; i++) {
+    const key = keyOf(addDays(start, i));
+    if (state.logs[key] && state.logs[key].status === 'completed') count++;
+  }
+  return count;
+}
+
+function completedTotal() {
+  return Object.values(state.logs).filter((l) => l.status === 'completed').length;
+}
+
+function grantXp(amount) {
+  const before = levelOf(state.xp);
+  state.xp += amount;
+  const after = levelOf(state.xp);
+  if (after > before) {
+    setTimeout(() => toast(`Level ${after} reached — rank ${rankOf(after)}. The System acknowledges your growth.`, 'gold'), 450);
+  }
+}
+
+/* ---------------- notifications & toasts ---------------- */
+
+function toast(message, kind = '') {
+  const wrap = $('#toasts');
+  const el = document.createElement('div');
+  const tag = kind === 'gold' ? 'LEVEL UP' : kind === 'danger' ? 'WARNING' : 'SYSTEM';
+  el.className = 'toast ' + kind;
+  el.innerHTML = `<span class="ti">${tag}</span><span>${esc(message)}</span>`;
+  wrap.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 320);
+  }, 3600);
+}
+
+function notifySupported() {
+  return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+async function requestNotifyPermission() {
+  if (!notifySupported()) {
+    toast('This browser does not support system notifications. In-app alerts will still appear.', 'danger');
+    return false;
+  }
+  if (Notification.permission === 'granted') return true;
+  const result = await Notification.requestPermission();
+  if (result === 'granted') {
+    toast('Alerts enabled. The System will remind you to drink water.', 'gold');
+    return true;
+  }
+  toast('Alerts blocked. You can re-enable them in your browser site settings.', 'danger');
+  return false;
+}
+
+function pushNotification(title, body) {
+  if (!notifySupported() || Notification.permission !== 'granted') return;
+  try {
+    new Notification(title, { body, tag: 'system-water', renotify: true });
+  } catch (err) { /* ignore */ }
+}
+
+function checkWaterReminder() {
+  const r = state.reminders;
+  if (!r.enabled) return;
+  const now = new Date();
+  const hour = now.getHours();
+  if (hour < 8 || hour >= 22) return;
+  const everyMs = Math.max(15, r.everyMin) * 60000;
+  const last = Math.max(r.lastDrinkAt || 0, r.lastNotifiedAt || 0);
+  if (Date.now() - last < everyMs) return;
+  r.lastNotifiedAt = Date.now();
+  save();
+  const goal = state.goals.water;
+  const drank = state.water[todayKey()] || 0;
+  pushNotification('HYDRATION QUEST', `No water logged for ${r.everyMin} min. ${Math.max(0, goal - drank)} ml left today.`);
+  toast(`Hydration quest: drink 250 ml (${Math.round((drank / goal) * 100)}% of goal done).`);
+}
+
+/* ---------------- modal ---------------- */
+
+function openModal(inner) {
+  const root = $('#modalRoot');
+  root.innerHTML = `
+    <div class="modal-backdrop" data-act="modal-close"></div>
+    <div class="modal-panel" role="dialog" aria-modal="true">
+      <button class="icon-btn modal-close" data-act="modal-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      ${inner}
+    </div>`;
+  root.hidden = false;
+  document.body.style.overflow = 'hidden';
+  const focusable = root.querySelector('input, select, button:not(.modal-close)');
+  if (focusable) setTimeout(() => focusable.focus(), 60);
+}
+
+function closeModal() {
+  $('#modalRoot').hidden = true;
+  $('#modalRoot').innerHTML = '';
+  document.body.style.overflow = '';
+  draft = null;
+}
+
+/* ---------------- rendering: shell ---------------- */
+
+function renderTopbar() {
+  const level = levelOf(state.xp);
+  const into = state.xp % XP_PER_LEVEL;
+  $('#hunterName').textContent = state.hunter || 'HUNTER';
+  $('#levelNum').textContent = level;
+  $('#rankBadge').textContent = rankOf(level);
+  $('#xpText').textContent = `${into} / ${XP_PER_LEVEL} XP`;
+  $('#xpFill').style.width = `${(into / XP_PER_LEVEL) * 100}%`;
+}
+
+function switchView(view) {
+  $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === view));
+  $$('.view').forEach((v) => v.classList.toggle('is-active', v.id === `view-${view}`));
+  renderAll();
+}
+
+/* ---------------- rendering: today ---------------- */
+
+function renderToday() {
+  const key = todayKey();
+  const p = planFor(key);
+  const st = dayState(key);
+  const goal = state.goals.water;
+  const drank = state.water[key] || 0;
+  const pct = Math.min(1, goal ? drank / goal : 0);
+  const C = 2 * Math.PI * 66;
+  const statusClass = st === 'done' ? 'is-done' : st === 'skip' ? 'is-skip' : '';
+  const tagClass = st === 'done' ? 'done' : st === 'skip' ? 'skip' : (p.template ? '' : 'rest');
+  const tagText = st === 'done' ? 'QUEST CLEARED' : st === 'skip' ? 'SKIPPED' : (p.template ? 'ACTIVE QUEST' : 'REST DAY');
+  const doneCount = p.exercises.filter((e) => e.done).length;
+
+  const exRows = p.exercises.map((ex, i) => `
+    <li class="ex ${ex.done ? 'is-done' : ''}">
+      <button class="check" data-act="toggle-ex" data-key="${key}" data-i="${i}" aria-label="Toggle ${esc(ex.name)}">✓</button>
+      <div class="ex-body">
+        <span class="ex-name">${esc(ex.name)}</span>
+        <span class="ex-meta">${ex.sets} × ${ex.reps}${ex.weight ? ` · ${ex.weight} kg` : ''}</span>
+      </div>
+      <div class="ex-actions">
+        <button class="icon-btn sm" data-act="edit-ex" data-key="${key}" data-i="${i}" aria-label="Edit exercise">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10-4-4L4 16v4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 6l4 4" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <button class="icon-btn sm" data-act="del-ex" data-key="${key}" data-i="${i}" aria-label="Remove exercise">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M6 7h12M10 7V5h4v2M8 7l1 13h6l1-13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </li>`).join('');
+
+  const list = p.exercises.length
+    ? `<ul class="ex-list">${exRows}</ul>`
+    : `<div class="empty" style="margin-top:16px">No training scheduled today. Pick a workout above to begin, or keep it a rest day.</div>`;
+
+  const options = [`<option value=""${!p.template ? ' selected' : ''}>Rest day</option>`]
+    .concat(state.templates.map((t) => `<option value="${t.id}"${p.template && p.template.id === t.id ? ' selected' : ''}>${esc(t.name)}</option>`))
+    .join('');
+
+  const actions = [];
+  if (st === 'done') {
+    actions.push(`<button class="btn ghost" data-act="reopen-day" data-key="${key}">UNDO CLEAR</button>`);
+    actions.push(`<button class="btn" data-act="skip-day" data-key="${key}">MARK SKIPPED</button>`);
+  } else {
+    actions.push(`<button class="btn primary" data-act="complete-day" data-key="${key}">${st === 'skip' ? 'CLEAR QUEST' : 'COMPLETE QUEST'}</button>`);
+    if (st !== 'skip') actions.push(`<button class="btn ghost" data-act="skip-day" data-key="${key}">SKIP TODAY</button>`);
+  }
+  actions.push(`<button class="btn" data-act="add-ex" data-key="${key}">+ EXERCISE</button>`);
+
+  const streak = computeStreak();
+  const week = completedThisWeek();
+
+  $('#view-today').innerHTML = `
+    <div class="section-head">
+      <h2>DAILY QUEST</h2>
+      <div class="line"></div>
+      <span class="hint">${shortDate(new Date())}</span>
+    </div>
+
+    <div class="quest ${statusClass}">
+      <div class="quest-top">
+        <div>
+          <h2 class="quest-title">${p.template ? esc(p.template.name) : 'REST &amp; RECOVER'}</h2>
+          <div class="quest-sub">${p.template ? `${esc(p.template.focus || 'Training')} · ${p.exercises.length} exercises · ${doneCount}/${p.exercises.length} done` : 'No training scheduled. Recovery is part of the climb.'}</div>
+        </div>
+        <span class="quest-tag ${tagClass}">${tagText}</span>
+      </div>
+
+      <div class="field" style="margin-top:14px;max-width:320px">
+        <span class="lbl">TODAY'S WORKOUT</span>
+        <select data-change="today-template">${options}</select>
+      </div>
+
+      ${list}
+
+      <div class="quest-actions">${actions.join('')}</div>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat"><div class="k">STREAK</div><div class="v">${streak} <small>DAY${streak === 1 ? '' : 'S'}</small></div></div>
+      <div class="stat"><div class="k">THIS WEEK</div><div class="v">${week} <small>/ ${state.goals.weekly}</small></div></div>
+      <div class="stat"><div class="k">WATER TODAY</div><div class="v">${(drank / 1000).toFixed(2)} <small>L</small></div></div>
+      <div class="stat"><div class="k">QUESTS CLEARED</div><div class="v">${completedTotal()}</div></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-head">
+        <div class="panel-title">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 3s6 6.4 6 11a6 6 0 0 1-12 0C6 9.4 12 3 12 3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          HYDRATION
+        </div>
+        <div class="spacer"></div>
+        <span class="panel-sub">${Math.round(pct * 100)}% of ${(goal / 1000).toFixed(1)} L</span>
+      </div>
+
+      <div class="water-wrap">
+        <div class="ring">
+          <svg viewBox="0 0 152 152">
+            <defs>
+              <linearGradient id="waterGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop stop-color="#5fe6ff" /><stop offset="1" stop-color="#3a86ff" />
+              </linearGradient>
+            </defs>
+            <circle class="track" cx="76" cy="76" r="66" />
+            <circle class="fill" cx="76" cy="76" r="66" stroke-dasharray="${(pct * C).toFixed(1)} ${C.toFixed(1)}" />
+          </svg>
+          <div class="ring-label">
+            <div class="big">${(drank / 1000).toFixed(2)}L</div>
+            <div class="small">${Math.max(0, goal - drank) > 0 ? `${Math.max(0, goal - drank)} ML LEFT` : 'GOAL MET'}</div>
+          </div>
+        </div>
+
+        <div class="water-side">
+          <div class="water-meta">
+            <span class="goal">INTAKE LOG</span>
+            <span class="panel-sub">${drank} / ${goal} ml</span>
+          </div>
+          <div class="water-btns">
+            <button class="btn" data-act="water-add" data-ml="250">+250 ML</button>
+            <button class="btn" data-act="water-add" data-ml="500">+500 ML</button>
+            <button class="btn" data-act="water-add" data-ml="750">+750 ML</button>
+          </div>
+          <div class="water-note" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            <label class="switch">
+              <input type="checkbox" data-change="reminders-toggle" ${state.reminders.enabled ? 'checked' : ''} />
+              <span class="track2"></span>
+              <span class="sw-label">Remind every ${state.reminders.everyMin} min</span>
+            </label>
+            <button class="btn ghost" style="padding:6px 10px;font-size:9px" data-act="water-reset">RESET</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------------- rendering: workouts ---------------- */
+
+function renderWorkouts() {
+  const cards = state.templates.map((t) => `
+    <article class="wcard">
+      <div class="wcard-head">
+        <div>
+          <h3>${esc(t.name)}</h3>
+          <div class="focus">${esc(t.focus || 'Custom training')}</div>
+        </div>
+        <span class="count">${t.exercises.length} MOVES</span>
+      </div>
+      <ul>
+        ${t.exercises.map((e) => `<li><span>${esc(e.name)}</span><span>${e.sets}×${e.reps}${e.weight ? ` · ${e.weight}kg` : ''}</span></li>`).join('') || '<li><span>No exercises yet</span><span>—</span></li>'}
+      </ul>
+      <div class="wcard-foot">
+        <button class="btn" data-act="edit-template" data-id="${t.id}">EDIT</button>
+        <button class="btn ghost" data-act="delete-template" data-id="${t.id}">DELETE</button>
+      </div>
+    </article>`).join('');
+
+  const todayDow = new Date().getDay();
+  const schRows = DAY_LABELS.map((label, dow) => {
+    const current = state.schedule[dow] || '';
+    const opts = [`<option value=""${!current ? ' selected' : ''}>Rest day</option>`]
+      .concat(state.templates.map((t) => `<option value="${t.id}"${current === t.id ? ' selected' : ''}>${esc(t.name)}</option>`))
+      .join('');
+    return `
+      <div class="sch-row ${dow === todayDow ? 'is-today' : ''}">
+        <span class="sch-day">${label}</span>
+        <select data-change="schedule" data-dow="${dow}">${opts}</select>
+      </div>`;
+  }).join('');
+
+  $('#view-workouts').innerHTML = `
+    <div class="section-head">
+      <h2>WORKOUT LIBRARY</h2>
+      <div class="line"></div>
+      <button class="btn" data-act="new-template">+ NEW WORKOUT</button>
+    </div>
+    <div class="card-grid">${cards}</div>
+
+    <div class="section-head">
+      <h2>WEEKLY SCHEDULE</h2>
+      <div class="line"></div>
+      <span class="hint">Assign a workout to each day</span>
+    </div>
+    <div class="panel">
+      <div class="schedule">${schRows}</div>
+    </div>
+
+    <div class="section-head">
+      <h2>HOW IT WORKS</h2>
+      <div class="line"></div>
+    </div>
+    <div class="panel">
+      <p class="panel-sub" style="margin:0;line-height:1.6">
+        Edit a workout in the library and every future scheduled day follows the new structure.
+        On the Today screen you can also swap the day's workout, add an extra exercise, or mark the day
+        as skipped — the System records all of it, so a changed plan or a missed day never breaks your history.
+      </p>
+    </div>
+  `;
+}
+
+/* ---------------- rendering: progress ---------------- */
+
+function renderProgress() {
+  const today = new Date();
+  const start = addDays(today, -(today.getDay() + 7 * 11));
+  const cells = [];
+  for (let i = 0; i < 84; i++) {
+    const d = addDays(start, i);
+    const key = keyOf(d);
+    const st = dayState(key);
+    const cls = st === 'done' ? 'done' : st === 'skip' ? 'skip' : st === 'miss' ? 'miss' : st === 'rest' ? 'rest' : st === 'pending' ? 'pending' : 'upcoming';
+    cells.push(`<button class="hm-cell ${cls} ${key === todayKey() ? 'today' : ''}" data-act="day-open" data-key="${key}" title="${key} · ${st}" aria-label="${key} ${st}"></button>`);
+  }
+
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = addDays(new Date(), -i);
+    days.push({ key: keyOf(d), date: d, ml: state.water[keyOf(d)] || 0 });
+  }
+  const goal = state.goals.water || 2500;
+  const maxVal = Math.max(goal, ...days.map((d) => d.ml));
+
+  const bars = days.map((d) => {
+    const h = Math.max(2, (d.ml / maxVal) * 100);
+    const cls = d.ml >= goal ? 'is-goal' : d.ml < goal * 0.4 ? 'is-low' : '';
+    return `
+      <div class="bar-col ${cls}">
+        <span class="bar-val">${(d.ml / 1000).toFixed(1)}L</span>
+        <div class="bar-track">
+          <div class="bar-fill" style="height:${h}%"></div>
+          <div class="bar-goal-line" style="bottom:${(goal / maxVal) * 100}%"></div>
+        </div>
+        <span class="bar-label">${DAY_LABELS[d.date.getDay()]}</span>
+      </div>`;
+  }).join('');
+
+  $('#view-progress').innerHTML = `
+    <div class="section-head">
+      <h2>HUNTER RECORD</h2>
+      <div class="line"></div>
+      <span class="hint">Level ${levelOf(state.xp)} · Rank ${rankOf(levelOf(state.xp))}</span>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat"><div class="k">CURRENT STREAK</div><div class="v">${computeStreak()} <small>D</small></div></div>
+      <div class="stat"><div class="k">BEST STREAK</div><div class="v">${bestStreak()} <small>D</small></div></div>
+      <div class="stat gold"><div class="k">TOTAL XP</div><div class="v">${state.xp}</div></div>
+      <div class="stat"><div class="k">QUESTS CLEARED</div><div class="v">${completedTotal()}</div></div>
+    </div>
+
+    <div class="section-head">
+      <h2>QUEST MAP</h2>
+      <div class="line"></div>
+      <span class="hint">Tap a day to log or edit it</span>
+    </div>
+    <div class="panel">
+      <div class="heatmap">${cells.join('')}</div>
+      <div class="legend">
+        <span><i style="background:linear-gradient(140deg,#4fe0ff,#2e7dff);border-color:#5fe6ff"></i>Cleared</span>
+        <span><i style="background:rgba(255,84,112,.32);border-color:rgba(255,84,112,.5)"></i>Skipped</span>
+        <span><i style="background:rgba(255,84,112,.1);border-color:rgba(255,84,112,.22)"></i>Missed</span>
+        <span><i style="background:rgba(139,92,246,.1);border-color:rgba(139,92,246,.2)"></i>Rest</span>
+        <span><i style="border-color:#5fe6ff;background:rgba(95,230,255,.12)"></i>Today</span>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <h2>HYDRATION · LAST 7 DAYS</h2>
+      <div class="line"></div>
+    </div>
+    <div class="panel">
+      <div class="bars">${bars}</div>
+    </div>
+  `;
+}
+
+function bestStreak() {
+  const completed = Object.keys(state.logs).filter((k) => state.logs[k].status === 'completed');
+  let best = 0;
+  completed.forEach((endKey) => {
+    let run = 0;
+    const end = parseKey(endKey);
+    for (let i = 0; i < 400; i++) {
+      const day = addDays(end, -i);
+      const log = state.logs[keyOf(day)];
+      if (log && log.status === 'completed') { run++; continue; }
+      if (!state.schedule[day.getDay()]) continue; // rest day keeps a streak alive
+      break;
+    }
+    best = Math.max(best, run);
+  });
+  return best;
+}
+
+function renderAll() {
+  renderTopbar();
+  renderToday();
+  renderWorkouts();
+  renderProgress();
+  if (typeof renderHistory === 'function') renderHistory();
+  if (typeof renderNutrition === 'function') renderNutrition();
+  if (typeof coachIntoToday === 'function') coachIntoToday();
+}
+
+/* ---------------- workout template editor ---------------- */
+
+let draft = null;
+
+function blankExercise() { return { name: '', sets: 3, reps: 10, weight: 0 }; }
+
+function openTemplateEditor(id) {
+  if (id) {
+    const tpl = state.templates.find((t) => t.id === id);
+    if (!tpl) return;
+    draft = { id: tpl.id, name: tpl.name, focus: tpl.focus || '', exercises: tpl.exercises.map((e) => ({ ...e })), isNew: false };
+  } else {
+    draft = { id: uid(), name: 'NEW WORKOUT', focus: '', exercises: [blankExercise()], isNew: true };
+  }
+  renderTemplateEditor();
+}
+
+function renderTemplateEditor() {
+  const rows = draft.exercises.map((e, i) => `
+    <div class="ex-edit-row">
+      <label class="field ex-name-in"><span class="lbl">EXERCISE</span>
+        <input type="text" data-tpl-name="${i}" value="${esc(e.name)}" placeholder="Exercise name" />
+      </label>
+      <label class="field"><span class="lbl">SETS</span>
+        <input type="number" min="1" max="20" data-tpl-sets="${i}" value="${e.sets}" />
+      </label>
+      <label class="field"><span class="lbl">REPS</span>
+        <input type="number" min="1" max="100" data-tpl-reps="${i}" value="${e.reps}" />
+      </label>
+      <label class="field"><span class="lbl">KG</span>
+        <input type="number" min="0" max="500" step="0.5" data-tpl-weight="${i}" value="${e.weight || 0}" />
+      </label>
+      <button class="icon-btn rm" data-act="tpl-rm-row" data-i="${i}" aria-label="Remove row">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 7h12M10 7V5h4v2M8 7l1 13h6l1-13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>`).join('');
+
+  openModal(`
+    <h2>${draft.isNew ? 'FORGE WORKOUT' : 'EDIT WORKOUT'}</h2>
+    <div class="sub">Shape the structure. Future scheduled days follow this plan.</div>
+    <div class="form-grid">
+      <label class="field"><span class="lbl">WORKOUT NAME</span>
+        <input type="text" data-tpl-field="name" value="${esc(draft.name)}" placeholder="e.g. PUSH DAY" />
+      </label>
+      <label class="field"><span class="lbl">TARGET MUSCLES</span>
+        <input type="text" data-tpl-field="focus" value="${esc(draft.focus)}" placeholder="e.g. Chest · Shoulders" />
+      </label>
+    </div>
+    <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">EXERCISES</h2><div class="line"></div></div>
+    <div>${rows || '<div class="empty">No exercises yet — add the first one.</div>'}</div>
+    <button class="btn block" data-act="tpl-add-row">+ ADD EXERCISE</button>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="tpl-save">SAVE WORKOUT</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+function collectTemplateDraft() {
+  if (!draft) return;
+  const nameEl = $('[data-tpl-field="name"]');
+  const focusEl = $('[data-tpl-field="focus"]');
+  if (nameEl) draft.name = nameEl.value.trim() || 'UNTITLED WORKOUT';
+  if (focusEl) draft.focus = focusEl.value.trim();
+  draft.exercises = $$('[data-tpl-name]').map((_, i) => ({
+    name: ($(`[data-tpl-name="${i}"]`)?.value || '').trim(),
+    sets: clampNum($(`[data-tpl-sets="${i}"]`)?.value, 1, 20, 3),
+    reps: clampNum($(`[data-tpl-reps="${i}"]`)?.value, 1, 100, 10),
+    weight: clampNum($(`[data-tpl-weight="${i}"]`)?.value, 0, 500, 0)
+  }));
+}
+
+function clampNum(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/* ---------------- exercise editor (single) ---------------- */
+
+function openExerciseEditor(key, index) {
+  const log = ensureLog(key);
+  const ex = log.exercises[index];
+  if (!ex) return;
+  openModal(`
+    <h2>EDIT EXERCISE</h2>
+    <div class="sub">Adjust today's target. The saved workout stays unchanged.</div>
+    <div class="form-grid two">
+      <label class="field" style="grid-column:1/-1"><span class="lbl">NAME</span>
+        <input type="text" data-ex-field="name" value="${esc(ex.name)}" />
+      </label>
+      <label class="field"><span class="lbl">SETS</span><input type="number" min="1" max="20" data-ex-field="sets" value="${ex.sets}" /></label>
+      <label class="field"><span class="lbl">REPS</span><input type="number" min="1" max="100" data-ex-field="reps" value="${ex.reps}" /></label>
+      <label class="field"><span class="lbl">WEIGHT (KG)</span><input type="number" min="0" max="500" step="0.5" data-ex-field="weight" value="${ex.weight || 0}" /></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="save-ex" data-key="${key}" data-i="${index}">SAVE</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+function openNewExercise(key) {
+  openModal(`
+    <h2>ADD EXERCISE</h2>
+    <div class="sub">Extra work for today only — cable work, cardio, anything.</div>
+    <div class="form-grid two">
+      <label class="field" style="grid-column:1/-1"><span class="lbl">NAME</span>
+        <input type="text" data-ex-field="name" placeholder="e.g. Incline Treadmill" />
+      </label>
+      <label class="field"><span class="lbl">SETS / MINUTES</span><input type="number" min="1" max="999" data-ex-field="sets" value="3" /></label>
+      <label class="field"><span class="lbl">REPS / LEVEL</span><input type="number" min="1" max="999" data-ex-field="reps" value="10" /></label>
+      <label class="field"><span class="lbl">WEIGHT (KG)</span><input type="number" min="0" max="500" step="0.5" data-ex-field="weight" value="0" /></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="save-new-ex" data-key="${key}">ADD</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+/* ---------------- day detail modal ---------------- */
+
+function openDayModal(key) {
+  const p = planFor(key);
+  const st = dayState(key);
+  const d = parseKey(key);
+  const rows = p.exercises.map((e) => `<li class="ex ${e.done ? 'is-done' : ''}" style="pointer-events:none"><div class="ex-body"><span class="ex-name">${esc(e.name)}</span><span class="ex-meta">${e.sets} × ${e.reps}${e.weight ? ` · ${e.weight} kg` : ''}</span></div></li>`).join('');
+  const tag = st === 'done' ? 'CLEARED' : st === 'skip' ? 'SKIPPED' : st === 'rest' ? 'REST DAY' : st === 'miss' ? 'MISSED' : 'PENDING';
+
+  openModal(`
+    <h2>${shortDate(d)}</h2>
+    <div class="sub">${p.template ? esc(p.template.name) : 'No workout scheduled'} · ${tag}</div>
+    ${rows ? `<ul class="ex-list">${rows}</ul>` : '<div class="empty">No exercises planned.</div>'}
+    <div class="modal-actions" style="margin-top:18px">
+      <button class="btn primary" data-act="day-status" data-key="${key}" data-status="completed">CLEARED</button>
+      <button class="btn danger" data-act="day-status" data-key="${key}" data-status="skipped">SKIPPED</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-act="day-clear" data-key="${key}">CLEAR RECORD</button>
+      <button class="btn ghost" data-act="modal-close">CLOSE</button>
+    </div>
+  `);
+}
+
+/* ---------------- actions ---------------- */
+
+function addWater(ml) {
+  const key = todayKey();
+  const goal = state.goals.water;
+  const before = state.water[key] || 0;
+  state.water[key] = Math.max(0, before + ml);
+  state.reminders.lastDrinkAt = Date.now();
+  state.reminders.lastNotifiedAt = Date.now();
+  if (!state.waterBonus[key] && state.water[key] >= goal) {
+    state.waterBonus[key] = true;
+    grantXp(XP_WATER);
+    toast('Hydration quest complete. Goal reached — well done, Hunter.', 'gold');
+  }
+  save();
+  renderAll();
+}
+
+function completeDay(key) {
+  const log = ensureLog(key);
+  if (log.exercises.length === 0 && !log.templateId) {
+    toast('Nothing scheduled for this day. Add or pick a workout first.', 'danger');
+    return;
+  }
+  log.status = 'completed';
+  log.exercises.forEach((e) => { e.done = true; });
+  if (!log.xpAwarded) {
+    log.xpAwarded = true;
+    grantXp(XP_WORKOUT);
+  }
+  save();
+  renderAll();
+  toast(key === todayKey() ? 'Quest cleared. +100 XP' : `Quest cleared for ${shortDate(parseKey(key))}. +100 XP`, 'gold');
+}
+
+function skipDay(key) {
+  const log = ensureLog(key);
+  log.status = 'skipped';
+  save();
+  renderAll();
+  toast('Day marked as skipped. Streak paused — tomorrow is a new quest.', 'danger');
+}
+
+function reopenDay(key) {
+  const log = state.logs[key];
+  if (!log) return;
+  log.status = 'pending';
+  save();
+  renderAll();
+}
+
+function clearDay(key) {
+  delete state.logs[key];
+  save();
+  renderAll();
+  toast('Record cleared.');
+}
+
+function toggleExercise(key, index) {
+  const log = ensureLog(key);
+  const ex = log.exercises[index];
+  if (!ex) return;
+  ex.done = !ex.done;
+  if (log.status === 'completed' && log.exercises.some((e) => !e.done)) log.status = 'pending';
+  save();
+  renderAll();
+}
+
+function deleteExercise(key, index) {
+  const log = ensureLog(key);
+  log.exercises.splice(index, 1);
+  save();
+  renderAll();
+}
+
+function saveExerciseEdit(key, index) {
+  const log = ensureLog(key);
+  const ex = log.exercises[index];
+  if (!ex) return;
+  const name = ($('[data-ex-field="name"]')?.value || '').trim();
+  if (!name) { toast('Exercise needs a name.', 'danger'); return; }
+  ex.name = name;
+  ex.sets = clampNum($('[data-ex-field="sets"]')?.value, 1, 999, 3);
+  ex.reps = clampNum($('[data-ex-field="reps"]')?.value, 1, 999, 10);
+  ex.weight = clampNum($('[data-ex-field="weight"]')?.value, 0, 500, 0);
+  save();
+  closeModal();
+  renderAll();
+  toast('Exercise updated.');
+}
+
+function addNewExercise(key) {
+  const name = ($('[data-ex-field="name"]')?.value || '').trim();
+  if (!name) { toast('Exercise needs a name.', 'danger'); return; }
+  const log = ensureLog(key);
+  log.exercises.push({
+    name,
+    sets: clampNum($('[data-ex-field="sets"]')?.value, 1, 999, 3),
+    reps: clampNum($('[data-ex-field="reps"]')?.value, 1, 999, 10),
+    weight: clampNum($('[data-ex-field="weight"]')?.value, 0, 500, 0),
+    done: false
+  });
+  if (log.status === 'completed') log.status = 'pending';
+  save();
+  closeModal();
+  renderAll();
+  toast('Exercise added to today.');
+}
+
+function setTodayTemplate(id) {
+  const key = todayKey();
+  const log = ensureLog(key);
+  const tpl = state.templates.find((t) => t.id === id) || null;
+  log.templateId = tpl ? tpl.id : null;
+  log.exercises = tpl ? tpl.exercises.map((e) => ({ ...e, done: false })) : [];
+  if (log.status === 'completed') log.status = 'pending';
+  save();
+  renderAll();
+}
+
+/* ---------------- settings ---------------- */
+
+function openSettings() {
+  const perm = notifySupported() ? Notification.permission : 'unsupported';
+  const permLabel = perm === 'granted' ? 'ALERTS ON' : perm === 'denied' ? 'BLOCKED' : perm === 'unsupported' ? 'UNSUPPORTED' : 'ENABLE ALERTS';
+  const every = state.reminders.everyMin;
+  openModal(`
+    <h2>SYSTEM SETTINGS</h2>
+    <div class="sub">Goals, alerts and hunter identity.</div>
+    <div class="form-grid">
+      <label class="field"><span class="lbl">HUNTER NAME</span>
+        <input type="text" data-set="name" value="${esc(state.hunter)}" />
+      </label>
+      <div class="form-grid two">
+        <label class="field"><span class="lbl">DAILY WATER GOAL (ML)</span>
+          <input type="number" min="500" max="8000" step="100" data-set="water" value="${state.goals.water}" />
+        </label>
+        <label class="field"><span class="lbl">WORKOUTS PER WEEK</span>
+          <input type="number" min="1" max="14" data-set="weekly" value="${state.goals.weekly}" />
+        </label>
+      </div>
+      <div class="form-grid two">
+        <label class="field"><span class="lbl">DAILY CALORIE GOAL</span>
+          <input type="number" min="1000" max="6000" step="50" data-set="kcal" value="${state.nutrition.kcal}" />
+        </label>
+        <label class="field"><span class="lbl">DAILY PROTEIN GOAL (G)</span>
+          <input type="number" min="40" max="400" step="5" data-set="protein" value="${state.nutrition.protein}" />
+        </label>
+      </div>
+      <div class="form-grid two">
+        <label class="field"><span class="lbl">REMINDER INTERVAL (MIN)</span>
+          <input type="number" min="15" max="360" step="15" data-set="every" value="${every}" />
+        </label>
+        <div class="field"><span class="lbl">BROWSER NOTIFICATIONS</span>
+          <button class="btn block" data-act="notify-perm">${permLabel}</button>
+        </div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" data-change="settings-reminders" ${state.reminders.enabled ? 'checked' : ''} />
+        <span class="track2"></span>
+        <span class="sw-label">Water reminders (8:00 – 22:00)</span>
+      </label>
+      <p class="panel-sub" style="margin:4px 0 0;font-size:12.5px">
+        Reminders only fire while this app is open in a tab. Turn on browser alerts too and keep the tab running for full coverage.
+      </p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="save-settings">SAVE</button>
+      <button class="btn danger" data-act="reset-data">RESET ALL DATA</button>
+    </div>
+  `);
+}
+
+function saveSettings() {
+  const name = ($('[data-set="name"]')?.value || '').trim();
+  state.hunter = name || 'HUNTER';
+  state.goals.water = clampNum($('[data-set="water"]')?.value, 500, 8000, 2500);
+  state.goals.weekly = clampNum($('[data-set="weekly"]')?.value, 1, 14, 4);
+  state.reminders.everyMin = clampNum($('[data-set="every"]')?.value, 15, 360, 90);
+  state.nutrition.kcal = clampNum($('[data-set="kcal"]')?.value, 1000, 6000, 2200);
+  state.nutrition.protein = clampNum($('[data-set="protein"]')?.value, 40, 400, 140);
+  save();
+  closeModal();
+  renderAll();
+  toast('Settings saved.');
+}
+
+/* ---------------- events ---------------- */
+
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const act = el.dataset.act;
+  const key = el.dataset.key;
+  const i = el.dataset.i !== undefined ? Number(el.dataset.i) : null;
+
+  switch (act) {
+    case 'tab': switchView(el.dataset.view); break;
+    case 'open-settings': openSettings(); break;
+    case 'modal-close': closeModal(); break;
+
+    case 'notify-perm': {
+      const ok = await requestNotifyPermission();
+      if (ok) {
+        state.reminders.enabled = true;
+        save();
+        renderAll();
+        el.textContent = 'ALERTS ON';
+      }
+      break;
+    }
+
+    case 'water-add': addWater(Number(el.dataset.ml) || 0); break;
+    case 'water-reset':
+      if (confirm('Reset today\'s water intake to 0?')) {
+        state.water[todayKey()] = 0;
+        save();
+        renderAll();
+      }
+      break;
+
+    case 'toggle-ex': toggleExercise(key, i); break;
+    case 'edit-ex': openExerciseEditor(key, i); break;
+    case 'save-ex': saveExerciseEdit(key, i); break;
+    case 'del-ex': deleteExercise(key, i); break;
+    case 'add-ex': openNewExercise(key); break;
+    case 'save-new-ex': addNewExercise(key); break;
+
+    case 'complete-day': completeDay(key); break;
+    case 'skip-day': skipDay(key); break;
+    case 'reopen-day': reopenDay(key); break;
+    case 'day-open': openDayModal(key); break;
+    case 'day-clear':
+      if (confirm('Clear the record for this day?')) { clearDay(key); closeModal(); }
+      break;
+    case 'day-status':
+      if (el.dataset.status === 'completed') completeDay(key);
+      else skipDay(key);
+      closeModal();
+      break;
+
+    case 'new-template': openTemplateEditor(null); break;
+    case 'edit-template': openTemplateEditor(el.dataset.id); break;
+    case 'delete-template': {
+      const tpl = state.templates.find((t) => t.id === el.dataset.id);
+      if (!tpl) break;
+      if (confirm(`Delete "${tpl.name}"? Days scheduled with it become rest days.`)) {
+        state.templates = state.templates.filter((t) => t.id !== tpl.id);
+        Object.keys(state.schedule).forEach((d) => { if (state.schedule[d] === tpl.id) state.schedule[d] = null; });
+        save();
+        renderAll();
+        toast('Workout deleted.');
+      }
+      break;
+    }
+    case 'tpl-add-row':
+      collectTemplateDraft();
+      draft.exercises.push(blankExercise());
+      renderTemplateEditor();
+      break;
+    case 'tpl-rm-row':
+      collectTemplateDraft();
+      draft.exercises.splice(i, 1);
+      renderTemplateEditor();
+      break;
+    case 'tpl-save': {
+      collectTemplateDraft();
+      if (!draft) break;
+      const wasNew = draft.isNew;
+      const cleaned = draft.exercises.filter((ex) => ex.name);
+      const template = { id: draft.id, name: draft.name, focus: draft.focus, exercises: cleaned.length ? cleaned : [{ name: 'New Exercise', sets: 3, reps: 10, weight: 0 }] };
+      if (wasNew) state.templates.push(template);
+      else state.templates = state.templates.map((t) => (t.id === template.id ? template : t));
+      save();
+      closeModal();
+      renderAll();
+      toast(wasNew ? 'Workout forged.' : 'Workout updated.', 'gold');
+      break;
+    }
+
+    case 'save-settings': saveSettings(); break;
+    case 'reset-data':
+      if (confirm('Erase all workouts, water logs and progress? This cannot be undone.')) {
+        try { localStorage.removeItem(STORE_KEY); } catch (err) { /* ignore */ }
+        memoryStore = null;
+        state = defaultState();
+        save();
+        closeModal();
+        renderAll();
+        toast('All data reset. A new hunt begins.');
+      }
+      break;
+  }
+});
+
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-change]');
+  if (!el) return;
+  const mode = el.dataset.change;
+
+  if (mode === 'today-template') {
+    setTodayTemplate(el.value);
+  } else if (mode === 'schedule') {
+    const dow = Number(el.dataset.dow);
+    state.schedule[dow] = el.value || null;
+    save();
+    renderAll();
+    toast('Schedule updated.');
+  } else if (mode === 'reminders-toggle') {
+    state.reminders.enabled = el.checked;
+    if (el.checked) {
+      state.reminders.lastNotifiedAt = Date.now();
+      requestNotifyPermission().then((ok) => {
+        if (!ok) toast('Reminders will appear as in-app alerts until browser alerts are allowed.');
+      });
+    }
+    save();
+    renderAll();
+  } else if (mode === 'settings-reminders') {
+    state.reminders.enabled = el.checked;
+    save();
+    if (el.checked) requestNotifyPermission();
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#modalRoot').hidden) closeModal();
+});
+
+/* ---------------- boot ---------------- */
+
+renderAll();
+setInterval(checkWaterReminder, 30000);
+setInterval(renderTopbar, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderAll(); });
