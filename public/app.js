@@ -1016,11 +1016,20 @@ function openSettings() {
       </div>
       <input type="file" accept="application/json,.json" data-backup-file hidden />
 
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">ACCOUNT</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        <span id="settingsAccount">${typeof accountLabel === 'function' ? esc(accountLabel()) : 'Sign in with Freebuff to sync.'}</span>
+      </p>
+      <form method="post" action="/auth/freebuff/signout" class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn ghost" type="submit">SIGN OUT</button>
+      </form>
+
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">SERVER SYNC</h2><div class="line"></div></div>
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
         <span id="settingsSync">${typeof syncStatusText === 'function' ? syncStatusText() : 'LOCAL ONLY'}</span>.
         Every change is pushed to the server automatically, and the newest copy wins on any device.
-        PULL NOW replaces this browser's copy with the server's.
+        PULL NOW replaces this browser's copy with the server's. The server only answers your signed-in
+        Freebuff account.
       </p>
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="sync-push">PUSH NOW</button>

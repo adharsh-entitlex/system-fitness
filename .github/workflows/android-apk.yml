@@ -1,0 +1,117 @@
+name: Build Android APK
+
+# Builds the Trusted Web Activity APK from android/twa-manifest.json.
+# Download it from the run's Artifacts section and install it on the phone.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'android' }}
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'systemfitness' }}
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'systemfitness' }}
+      BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'systemfitness' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-36 build-tools;36.0.0 platform-tools"
+
+      - name: Install Bubblewrap
+        run: npm install -g @bubblewrap/cli
+
+      - name: Point Bubblewrap at the toolchain
+        run: |
+          mkdir -p "$HOME/.bubblewrap"
+          printf '{"jdkPath":"%s","androidSdkPath":"%s"}\n' "$JAVA_HOME" "$ANDROID_SDK_ROOT" > "$HOME/.bubblewrap/config.json"
+
+      - name: Provide the signing key
+        id: keystore
+        working-directory: android
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Using the keystore stored in ANDROID_KEYSTORE_BASE64."
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > android.keystore
+            echo "source=secret" >> "$GITHUB_OUTPUT"
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret: signing with a throwaway key."
+            echo "Add one (see README) for APKs that can update each other in place."
+            keytool -genkeypair -v \
+              -keystore android.keystore \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEYSTORE_PASSWORD" \
+              -dname "CN=THE SYSTEM, O=Adharsh M, C=IN"
+            echo "source=generated" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate the Android project
+        working-directory: android
+        run: bubblewrap update --skipVersionUpgrade
+
+      - name: Set the version shown on the phone
+        working-directory: android
+        run: |
+          version="$(node -p "require('./twa-manifest.json').appVersionName")"
+          sed -i "s/versionName \"\"/versionName \"$version\"/" app/build.gradle
+          grep -n 'versionName' app/build.gradle
+
+      - name: Build the signed APK
+        working-directory: android
+        run: bubblewrap build --skipPwaValidation
+
+      - name: Report the signing fingerprint
+        working-directory: android
+        run: |
+          {
+            echo "### Android APK"
+            echo
+            echo '```'
+            keytool -list -v -keystore android.keystore -alias "$KEY_ALIAS" \
+              -storepass "$KEYSTORE_PASSWORD" | grep -E 'SHA256|SHA-256'
+            echo '```'
+            echo
+            echo "Paste that SHA-256 into \`TWA_FINGERPRINT\` (Sites project variables) so the"
+            echo "installed app opens without a browser address bar."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: the-system-apk
+          path: |
+            android/*.apk
+            android/*.aab
+          if-no-files-found: error
+
+      - name: Upload throwaway keystore
+        if: steps.keystore.outputs.source == 'generated'
+        uses: actions/upload-artifact@v4
+        with:
+          name: throwaway-keystore
+          path: android/android.keystore

@@ -6,6 +6,13 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
+  // Public development client from `sites_enable_auth` (loopback only).
+  // The hosted deployment gets its own values injected on deploy.
+  "vars": {
+    "FREEBUFF_CLIENT_ID": "5c1f5c36-ea22-4df0-8b69-90492942b0f0",
+    "FREEBUFF_ISSUER": "https://freebuff.com/oidc",
+    "APP_ORIGIN": "http://localhost:8787"
+  },
   "d1_databases": [
     {
       "binding": "DB",

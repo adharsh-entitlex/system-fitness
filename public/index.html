@@ -80,6 +80,26 @@
   </footer>
 </div>
 
+<div class="gate" id="authGate" hidden>
+  <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+    <svg class="gate-sigil" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <path d="M24 3 44 14v20L24 45 4 34V14L24 3Z" stroke="url(#gg)" stroke-width="1.5" />
+      <path d="M24 17v14M18 24h12" stroke="#5fe6ff" stroke-width="1.6" stroke-linecap="round" />
+      <defs>
+        <linearGradient id="gg" x1="4" y1="3" x2="44" y2="45" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#5fe6ff" /><stop offset="1" stop-color="#8b5cf6" />
+        </linearGradient>
+      </defs>
+    </svg>
+    <h1 id="gateTitle">SYSTEM LOCKED</h1>
+    <p id="gateText">Sign in with your Freebuff account to open your record.</p>
+    <a class="btn primary" id="gateSignIn" href="/auth/freebuff/signin?returnTo=/">SIGN IN WITH FREEBUFF</a>
+    <form method="post" action="/auth/freebuff/signout">
+      <button class="btn ghost" type="submit">SIGN OUT</button>
+    </form>
+  </div>
+</div>
+
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <div class="modal-root" id="modalRoot" hidden></div>
 
