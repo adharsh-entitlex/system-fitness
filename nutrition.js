@@ -57,11 +57,13 @@ function renderHistory() {
     .filter(([, l]) => l && (l.status === 'completed' || l.status === 'skipped' || (l.exercises && l.exercises.length)))
     .sort((a, b) => (a[0] < b[0] ? 1 : -1));
 
-  const weekAgo = addDays(new Date(), -6);
+  /* Compare date keys, not Date objects: keyOf() stamps YYYY-MM-DD and parsing
+     back gives midnight, so a Date comparison silently dropped the 6th day. */
+  const weekAgoKey = keyOf(addDays(new Date(), -6));
   const filtered = entries.filter(([k, l]) => {
     if (historyFilter === 'done') return l.status === 'completed';
     if (historyFilter === 'skip') return l.status === 'skipped';
-    if (historyFilter === 'week') return parseKey(k) >= weekAgo;
+    if (historyFilter === 'week') return k >= weekAgoKey;
     return true;
   });
 

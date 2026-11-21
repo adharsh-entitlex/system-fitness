@@ -73,26 +73,32 @@ function defaultState() {
 
 let memoryStore = null;
 
+/* Normalises any stored or imported object against the current schema, so
+   old saves and backups missing newer keys keep working. */
+function normalizeState(parsed) {
+  const base = defaultState();
+  const src = parsed && typeof parsed === 'object' ? parsed : {};
+  return {
+    ...base,
+    ...src,
+    goals: { ...base.goals, ...(src.goals || {}) },
+    reminders: { ...base.reminders, ...(src.reminders || {}) },
+    schedule: { ...base.schedule, ...(src.schedule || {}) },
+    templates: Array.isArray(src.templates) && src.templates.length ? src.templates : base.templates,
+    logs: src.logs || {},
+    water: src.water || {},
+    waterBonus: src.waterBonus || {},
+    meals: src.meals || {},
+    pantry: Array.isArray(src.pantry) ? src.pantry : DEFAULT_PANTRY.slice(),
+    nutrition: { ...base.nutrition, ...(src.nutrition || {}) }
+  };
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return defaultState();
-    const parsed = JSON.parse(raw);
-    const base = defaultState();
-    return {
-      ...base,
-      ...parsed,
-      goals: { ...base.goals, ...(parsed.goals || {}) },
-      reminders: { ...base.reminders, ...(parsed.reminders || {}) },
-      schedule: { ...base.schedule, ...(parsed.schedule || {}) },
-      templates: Array.isArray(parsed.templates) && parsed.templates.length ? parsed.templates : base.templates,
-      logs: parsed.logs || {},
-      water: parsed.water || {},
-      waterBonus: parsed.waterBonus || {},
-      meals: parsed.meals || {},
-      pantry: Array.isArray(parsed.pantry) ? parsed.pantry : DEFAULT_PANTRY.slice(),
-      nutrition: { ...base.nutrition, ...(parsed.nutrition || {}) }
-    };
+    return normalizeState(JSON.parse(raw));
   } catch (err) {
     return memoryStore || defaultState();
   }
@@ -107,6 +113,61 @@ function save() {
 }
 
 let state = loadState();
+
+/* ---------------- backup & restore ----------------
+   History lives only in this browser's localStorage, which disappears when
+   site data is cleared and never follows you to another device. Export/import
+   is the escape hatch: a plain JSON file holding the whole state object. */
+
+function storageSizeKb() {
+  try {
+    return (new Blob([JSON.stringify(state)]).size / 1024).toFixed(1);
+  } catch (err) {
+    return '0';
+  }
+}
+
+function exportBackup() {
+  const payload = { app: 'system-fitness', version: 1, exportedAt: new Date().toISOString(), state };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `system-fitness-backup-${todayKey()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('Backup downloaded. Keep the file somewhere safe.', 'gold');
+}
+
+function importBackupFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(String(reader.result));
+    } catch (err) {
+      toast('That file is not valid JSON.', 'danger');
+      return;
+    }
+    const candidate = parsed && parsed.app === 'system-fitness' && parsed.state ? parsed.state : parsed;
+    if (!candidate || typeof candidate !== 'object' || (!candidate.logs && !candidate.water && !candidate.meals)) {
+      toast('That file does not look like a System backup.', 'danger');
+      return;
+    }
+    const sessions = Object.keys(candidate.logs || {}).length;
+    if (!confirm(`Restore this backup? It replaces the data saved in this browser (${sessions} logged day${sessions === 1 ? '' : 's'}).`)) return;
+    state = normalizeState(candidate);
+    save();
+    closeModal();
+    renderAll();
+    toast('Backup restored. Your record is back.', 'gold');
+  };
+  reader.onerror = () => toast('Could not read that file.', 'danger');
+  reader.readAsText(file);
+}
 
 /* ---------------- dates ---------------- */
 
@@ -803,19 +864,31 @@ function skipDay(key) {
   toast('Day marked as skipped. Streak paused — tomorrow is a new quest.', 'danger');
 }
 
+/* XP is only owed for a day that is still cleared. Reopening or wiping the
+   record takes the award back, so totals can't be farmed by re-clearing. */
+function revokeWorkoutXp(log) {
+  if (!log || !log.xpAwarded) return false;
+  log.xpAwarded = false;
+  state.xp = Math.max(0, state.xp - XP_WORKOUT);
+  return true;
+}
+
 function reopenDay(key) {
   const log = state.logs[key];
   if (!log) return;
   log.status = 'pending';
+  const lost = revokeWorkoutXp(log);
   save();
   renderAll();
+  toast(lost ? 'Quest reopened. Awarded XP returned.' : 'Quest reopened.');
 }
 
 function clearDay(key) {
+  const lost = revokeWorkoutXp(state.logs[key]);
   delete state.logs[key];
   save();
   renderAll();
-  toast('Record cleared.');
+  toast(lost ? 'Record cleared. Awarded XP returned.' : 'Record cleared.');
 }
 
 function toggleExercise(key, index) {
@@ -925,6 +998,18 @@ function openSettings() {
       <p class="panel-sub" style="margin:4px 0 0;font-size:12.5px">
         Reminders only fire while this app is open in a tab. Turn on browser alerts too and keep the tab running for full coverage.
       </p>
+
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">BACKUP</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        Your history is stored in this browser only, under <code>${STORE_KEY}</code>
+        (${storageSizeKb()} KB). Clearing site data or switching devices loses it, so export a
+        backup file and keep it safe.
+      </p>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn" data-act="export-backup">EXPORT BACKUP</button>
+        <button class="btn ghost" data-act="import-backup">IMPORT BACKUP</button>
+      </div>
+      <input type="file" accept="application/json,.json" data-backup-file hidden />
     </div>
     <div class="modal-actions">
       <button class="btn primary" data-act="save-settings">SAVE</button>
@@ -1041,6 +1126,12 @@ document.addEventListener('click', async (e) => {
     }
 
     case 'save-settings': saveSettings(); break;
+    case 'export-backup': exportBackup(); break;
+    case 'import-backup': {
+      const input = $('[data-backup-file]');
+      if (input) input.click();
+      break;
+    }
     case 'reset-data':
       if (confirm('Erase all workouts, water logs and progress? This cannot be undone.')) {
         try { localStorage.removeItem(STORE_KEY); } catch (err) { /* ignore */ }
@@ -1082,6 +1173,13 @@ document.addEventListener('change', (e) => {
     state.reminders.enabled = el.checked;
     save();
     if (el.checked) requestNotifyPermission();
+  }
+});
+
+document.addEventListener('change', (e) => {
+  if (e.target.matches && e.target.matches('[data-backup-file]')) {
+    importBackupFile(e.target.files && e.target.files[0]);
+    e.target.value = '';
   }
 });
 

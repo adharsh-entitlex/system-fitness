@@ -33,9 +33,26 @@ Then visit http://localhost:3000.
 | `foods.js` | Kerala dish database and pantry ingredient groups |
 | `nutrition.js` | History view, nutrition view and trainer notes |
 
-## Data
+## Data — where your history lives
 
-Everything is stored in the browser's `localStorage` under `system-fitness-v1`. Nothing leaves your device. The gear icon holds the hunter name, water goal, weekly workout target, calorie goal and protein goal.
+Everything is stored in the browser's `localStorage` under the key `system-fitness-v1`,
+as one JSON object: workout logs (`logs`, keyed by `YYYY-MM-DD`), water (`water`),
+meals (`meals`), templates, schedule, pantry, goals and XP. Nothing leaves your device
+and there is no server or database.
+
+What that means in practice:
+
+- History is **per browser and per device**. It does not sync between your phone and laptop.
+- Clearing site data, using private/incognito mode, or uninstalling the browser erases it.
+- Opening the page from a different origin (e.g. `file://` vs `http://localhost:3000`) is a different storage bucket.
+
+So the gear icon holds **EXPORT BACKUP** and **IMPORT BACKUP**. Export writes
+the whole state to a JSON file (`system-fitness-backup-YYYY-MM-DD.json`); import restores it
+on any device or browser. Export before clearing browser data, switching devices, or updating
+the app by hand.
+
+The gear icon also holds the hunter name, water goal, weekly workout target, calorie goal
+and protein goal.
 
 ## Author
 
