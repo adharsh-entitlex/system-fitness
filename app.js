@@ -65,7 +65,8 @@ function defaultState() {
     meals: {},
     pantry: DEFAULT_PANTRY.slice(),
     nutrition: { kcal: 2200, protein: 140 },
-    reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 }
+    reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 },
+    meta: { updatedAt: 0 }
   };
 }
 
@@ -89,8 +90,9 @@ function normalizeState(parsed) {
     water: src.water || {},
     waterBonus: src.waterBonus || {},
     meals: src.meals || {},
-    pantry: Array.isArray(src.pantry) ? src.pantry : DEFAULT_PANTRY.slice(),
-    nutrition: { ...base.nutrition, ...(src.nutrition || {}) }
+    pantry: Array.isArray(src.pantry) ? src.pantry.filter((item) => typeof item === 'string') : DEFAULT_PANTRY.slice(),
+    nutrition: { ...base.nutrition, ...(src.nutrition || {}) },
+    meta: { ...base.meta, ...(src.meta || {}) }
   };
 }
 
@@ -105,11 +107,15 @@ function loadState() {
 }
 
 function save() {
+  // Stamped before serialising so the timestamp handed to the backend matches
+  // exactly what this browser has cached.
+  state.meta = { ...(state.meta || {}), updatedAt: Date.now() };
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch (err) {
     memoryStore = state;
   }
+  if (typeof schedulePush === 'function') schedulePush();
 }
 
 let state = loadState();
@@ -1010,6 +1016,17 @@ function openSettings() {
         <button class="btn ghost" data-act="import-backup">IMPORT BACKUP</button>
       </div>
       <input type="file" accept="application/json,.json" data-backup-file hidden />
+
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">SERVER SYNC</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        <span id="settingsSync">${typeof syncStatusText === 'function' ? syncStatusText() : 'LOCAL ONLY'}</span>.
+        Run <code>npm start</code> and open the app from the server address to keep the record on the backend;
+        every change is pushed automatically. PULL NOW replaces this browser's copy with the server's.
+      </p>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn" data-act="sync-push">PUSH NOW</button>
+        <button class="btn ghost" data-act="sync-pull">PULL NOW</button>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn primary" data-act="save-settings">SAVE</button>

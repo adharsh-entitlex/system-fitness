@@ -1,0 +1,7 @@
+# Backend record — personal data, never commit it
+data/
+
+# Tooling
+node_modules/
+*.log
+*.tmp

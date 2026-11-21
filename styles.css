@@ -688,6 +688,56 @@ label.field .lbl {
   color: rgba(122, 146, 184, 0.45);
 }
 
+.foot-sync {
+  display: block;
+  margin-top: 9px;
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  color: rgba(95, 230, 255, 0.55);
+}
+.foot-sync.is-offline { color: rgba(122, 146, 184, 0.45); }
+.foot-sync.is-error { color: var(--danger); }
+
+/* pantry: hunter-added ingredients */
+.chip.pantry-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+.chip-x {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1;
+  padding: 1px 2px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.chip-x:hover { opacity: 1; }
+.pantry-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pantry-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 11px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text);
+  background: rgba(6, 11, 22, 0.8);
+  border: 1px solid var(--line);
+}
+.pantry-add input:focus {
+  outline: none;
+  border-color: var(--line-strong);
+}
+.pantry-add input::placeholder { color: rgba(122, 146, 184, 0.7); }
+
 /* ---------------- responsive ---------------- */
 @media (max-width: 720px) {
   .app { padding: 14px 14px 60px; }

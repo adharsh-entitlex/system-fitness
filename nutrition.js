@@ -165,13 +165,27 @@ function renderNutrition() {
       </button>
     </li>`).join('');
 
+  const customItems = customPantryItems();
   const pantryHtml = INGREDIENT_GROUPS.map((grp) => `
     <div class="pantry-group">
       <span class="lbl">${esc(grp.name)}</span>
       <div class="chips">
         ${grp.items.map((it) => `<button class="chip ${pantryHas(it) ? 'on' : ''}" data-act="toggle-pantry" data-item="${esc(it)}">${esc(it)}</button>`).join('')}
       </div>
-    </div>`).join('');
+    </div>`).join('') + `
+    <div class="pantry-group">
+      <span class="lbl">MY INGREDIENTS${customItems.length ? ` · ${customItems.length}` : ''}</span>
+      <div class="chips">
+        ${customItems.map((it) => `<span class="chip on pantry-custom">${esc(it)}
+          <button class="chip-x" data-act="edit-pantry" data-item="${esc(it)}" aria-label="Rename ${esc(it)}" title="Rename">✎</button>
+          <button class="chip-x" data-act="remove-pantry" data-item="${esc(it)}" aria-label="Remove ${esc(it)}" title="Remove">×</button>
+        </span>`).join('') || '<span class="panel-sub" style="font-size:12px">Nothing added yet — add whatever is actually in your kitchen.</span>'}
+      </div>
+      <form class="pantry-add" data-form="pantry-add">
+        <input type="text" data-pantry-input placeholder="e.g. moong dal, oats, banana chips" maxlength="40" autocomplete="off" />
+        <button class="btn" type="submit">ADD</button>
+      </form>
+    </div>`;
 
   const suggestHtml = suggestions.length
     ? suggestions.map((f) => `
@@ -227,7 +241,7 @@ function renderNutrition() {
       <span class="hint">${pantryCount} ingredients</span>
     </div>
     <div class="panel">
-      <p class="panel-sub" style="margin:0 0 14px">Tap everything you have at home. Suggestions only use what is here.</p>
+      <p class="panel-sub" style="margin:0 0 14px">Tap everything you have at home, and add your own items below. Suggestions only use what is here; a custom item counts as available but has no dish entry of its own.</p>
       ${pantryHtml}
       <button class="btn ghost" data-act="pantry-clear" style="margin-top:16px">CLEAR PANTRY</button>
     </div>
@@ -395,6 +409,80 @@ function togglePantryItem(item) {
   renderAll();
 }
 
+/* Ingredients outside the built-in groups are the hunter's own additions. */
+function knownIngredients() {
+  const known = new Set();
+  INGREDIENT_GROUPS.forEach((grp) => grp.items.forEach((it) => known.add(it)));
+  return known;
+}
+
+function customPantryItems() {
+  const known = knownIngredients();
+  return (state.pantry || []).filter((item) => !known.has(item));
+}
+
+function normalizePantryName(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+function pantryHasName(name) {
+  const lower = name.toLowerCase();
+  return (state.pantry || []).some((item) => item.toLowerCase() === lower);
+}
+
+function addPantryItem(value) {
+  const name = normalizePantryName(value);
+  if (!name) { toast('Name the ingredient first.', 'danger'); return; }
+  if (pantryHasName(name)) { toast(`${name} is already in your pantry.`, 'danger'); return; }
+  if (!Array.isArray(state.pantry)) state.pantry = [];
+  state.pantry.push(name);
+  save();
+  renderAll();
+  toast(`${name} added to your pantry.`);
+}
+
+function removePantryItem(name) {
+  state.pantry = (state.pantry || []).filter((item) => item !== name);
+  save();
+  renderAll();
+  toast(`${name} removed from your pantry.`);
+}
+
+function editPantryItem(name) {
+  if (knownIngredients().has(name)) {
+    toast('Built-in ingredients can be unticked, not renamed.', 'danger');
+    return;
+  }
+  openModal(`
+    <h2>RENAME INGREDIENT</h2>
+    <div class="sub">Rename one of your own pantry entries.</div>
+    <label class="field"><span class="lbl">INGREDIENT</span>
+      <input type="text" data-pantry-field="name" maxlength="40" value="${esc(name)}" />
+    </label>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="save-pantry-edit" data-item="${esc(name)}">SAVE</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+function savePantryEdit(oldName) {
+  const input = $('[data-pantry-field="name"]');
+  const name = normalizePantryName(input ? input.value : '');
+  if (!name) { toast('Ingredient needs a name.', 'danger'); return; }
+  const at = (state.pantry || []).indexOf(oldName);
+  if (at < 0) { closeModal(); return; }
+  if (name.toLowerCase() !== oldName.toLowerCase() && pantryHasName(name)) {
+    toast(`${name} is already in your pantry.`, 'danger');
+    return;
+  }
+  state.pantry[at] = name;
+  save();
+  closeModal();
+  renderAll();
+  toast('Ingredient renamed.');
+}
+
 /* ---------------- events ---------------- */
 
 document.addEventListener('click', (e) => {
@@ -432,6 +520,12 @@ document.addEventListener('click', (e) => {
     logDish(el.dataset.id);
   } else if (act === 'toggle-pantry') {
     togglePantryItem(el.dataset.item);
+  } else if (act === 'edit-pantry') {
+    editPantryItem(el.dataset.item);
+  } else if (act === 'remove-pantry') {
+    removePantryItem(el.dataset.item);
+  } else if (act === 'save-pantry-edit') {
+    savePantryEdit(el.dataset.item);
   } else if (act === 'pantry-clear') {
     if (confirm('Clear every pantry ingredient? Suggestions will reset.')) {
       state.pantry = [];
@@ -439,6 +533,17 @@ document.addEventListener('click', (e) => {
       renderAll();
     }
   }
+});
+
+document.addEventListener('submit', (e) => {
+  const form = e.target.closest('[data-form="pantry-add"]');
+  if (!form) return;
+  e.preventDefault();
+  const input = form.querySelector('[data-pantry-input]');
+  addPantryItem(input ? input.value : '');
+  // renderAll() rebuilt the panel, so focus the fresh input, not the old one.
+  const fresh = document.querySelector('[data-pantry-input]');
+  if (fresh) fresh.focus();
 });
 
 /* ---------------- boot ---------------- */

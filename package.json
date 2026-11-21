@@ -1,0 +1,14 @@
+{
+  "name": "system-fitness",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Solo Leveling inspired personal fitness, hydration and nutrition tracker with a zero-dependency Node backend.",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "dev": "node server/server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
