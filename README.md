@@ -153,7 +153,7 @@ ECDH P-256 key and aes128gcm — no external push service and no dependency.
   `bubblewrap update --skipVersionUpgrade`
 - builds with `bubblewrap build --skipPwaValidation`
 - uploads `the-system-apk` and writes the signing certificate fingerprint into
-  the job summary
+  the job summary and the job log
 
 Add these repository secrets for a stable signature (otherwise a throwaway
 keystore is generated and each build has a new fingerprint):
@@ -168,9 +168,14 @@ Then set `TWA_FINGERPRINT` (Sites → Secrets) to the printed SHA-256 so `/.well
 
 ### Install on a phone
 
-`TWA_FINGERPRINT` currently holds the signature of the APK built on
-22 Nov 2026 (`6df13f84…4032b6`), so `/.well-known/assetlinks.json` verifies it
-and the installed app opens fullscreen, with no address bar.
+The current release is **1.5.0** (`appVersionCode` 2), built 22 Nov 2026 and
+signed with `98:E5:B3:AD:39:D6:1B:02:79:AA:E3:24:9C:31:3B:58:C5:EB:45:B5:34:9B:4F:07:CC:DB:2C:C2:0D:23:BF:9A`,
+which `TWA_FINGERPRINT` now holds, so `/.well-known/assetlinks.json` verifies it
+and the app opens fullscreen, with no address bar. `TWA_FINGERPRINT` also accepts
+a comma-separated list, so several signatures can be valid at once.
+
+Since this build uses a throwaway key, its signature differs from earlier
+builds: uninstall the old app before installing 1.5.0.
 
 1. Open **Actions → Build Android APK → the latest run** and download the
    `the-system-apk` artifact.
