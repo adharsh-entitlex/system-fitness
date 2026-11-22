@@ -11,6 +11,10 @@
   "triggers": {
     "crons": ["*/15 * * * *"]
   },
+  "vars": {
+    "AI_BASE_URL": "https://api.x.ai/v1",
+    "AI_MODEL": "<a model name from your xAI console>"
+  },
   "d1_databases": [
     {
       "binding": "DB",
