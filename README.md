@@ -119,7 +119,7 @@ Sign in with Freebuff guards the record:
 - Any other account gets 403 from every API route and sees a locked screen naming the owner.
   Nothing about the record is readable without the owning session.
 - The static app shell stays public so the sign-in screen can load; it contains no user data.
-- To hand the record to a different account, delete the `owner` row in D1 and sign in again.
+- To hand the record to a different account, ask me to clear the `owner` row and sign in again.
 - The local Node server has no login at all — keep it on localhost or a private network.
 
 ## Android
@@ -144,7 +144,8 @@ locally. Run it from **Actions → Build Android APK → Run workflow** (it also
 2. Unzip it and install `app-release-signed.apk` on the phone (allow installs from that source).
 
 The job installs JDK 17 and the Android SDK, points Bubblewrap at them, generates the project
-from `android/twa-manifest.json` (`bubblewrap update`) and signs it (`bubblewrap build`).
+from `android/twa-manifest.json` (`bubblewrap update`) and signs it (`bubblewrap build`). A run
+takes about two minutes; the artifact holds both `app-release-signed.apk` and the `.aab`.
 
 **Signing.** Without configuration the job generates a throwaway key and also uploads it as
 `throwaway-keystore` — enough to sideload, but the next build will be a different app signature,
@@ -157,10 +158,10 @@ so Android will refuse to update over it. Add these repository secrets to get on
 | `ANDROID_KEY_ALIAS` | Key alias (defaults to `android`) |
 
 **Address bar.** A TWA only fills the screen when the site trusts the app's signing certificate.
-The job prints the certificate SHA-256 in its summary. Add it as a project variable
-`TWA_FINGERPRINT` in Sites (comma-separate several), redeploy, and the app opens without a
-browser bar. `worker/index.js` serves those values at `/.well-known/assetlinks.json`, which is
-public even though the record is not.
+The job prints the certificate SHA-256 in its summary. Set that value as `TWA_FINGERPRINT`
+(comma-separate several) in Sites and redeploy; `worker/index.js` then serves it at
+`/.well-known/assetlinks.json`, which is public even though the record is not. Until then the
+installed app opens with a browser bar — everything else works.
 
 **Target level.** Bubblewrap 1.27 generates `compileSdk 36 / targetSdk 36`, which is what Google
 Play requires today; API 37 (Android 17) becomes the Play requirement in August 2027. The web side
