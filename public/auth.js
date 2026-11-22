@@ -108,6 +108,15 @@ async function loadSession() {
   }
 }
 
+/* Boot: decide between a session, guest mode and the locked gate. */
+async function bootAuth() {
+  await loadAuthConfig();
+  await loadSession();
+  if (!auth.user) auth.guest = localStorage.getItem(GUEST_KEY) === '1';
+  renderAuthScreen();
+  if (typeof renderAll === 'function') renderAll();
+}
+
 function resetLocalRecord() {
   if (typeof sync !== 'undefined') sync.suspend = true;
   state = defaultState();

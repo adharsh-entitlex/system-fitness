@@ -141,10 +141,25 @@ keystore is generated and each build has a new fingerprint):
 | `ANDROID_KEYSTORE_PASSWORD` | store/key password |
 | `ANDROID_KEY_ALIAS` | key alias |
 
-Then set `TWA_FINGERPRINT` (Sites → Secrets) to the printed SHA-256 so
-`/.well-known/assetlinks.json` verifies the app and Chrome does not show a URL
-bar. `targetSdk` is 36 because Bubblewrap 1.27 ignores 37; Play requires 37
-from August 2027.
+Then set `TWA_FINGERPRINT` (Sites → Secrets) to the printed SHA-256 so `/.well-known/assetlinks.json` verifies the app and Chrome does not show a URL bar. `targetSdk` is 36 because Bubblewrap 1.27 ignores 37; Play requires 37 from August 2027.
+
+### Install on a phone
+
+`TWA_FINGERPRINT` currently holds the signature of the APK built on
+22 Nov 2026 (`6df13f84…4032b6`), so `/.well-known/assetlinks.json` verifies it
+and the installed app opens fullscreen, with no address bar.
+
+1. Open **Actions → Build Android APK → the latest run** and download the
+   `the-system-apk` artifact.
+2. Unzip it and copy `app-release-signed.apk` to the phone.
+3. Tap the file and allow installs from your file manager when Android asks.
+4. Open **THE SYSTEM** and sign in — the same account, the same record.
+
+A build without the keystore secrets is signed with a throwaway key, so every
+new build has a new fingerprint. Re-read it with `openssl x509 -in cert.pem
+-fingerprint -sha256 -noout` (extract `META-INF/*.RSA` from the APK first), or
+from the run summary, and update `TWA_FINGERPRINT` before installing that
+build. Adding `ANDROID_KEYSTORE_BASE64` keeps one signature forever.
 
 ## Layout
 

@@ -16,6 +16,15 @@ const PUSH_STATE = {
   lastTick: 0
 };
 
+/* A browser can sit on the permission prompt or on its push service forever,
+   which would leave every notification button dead. Give up and say so. */
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+  ]);
+}
+
 function urlBase64ToBytes(base64) {
   const raw = String(base64 || '').replace(/-/g, '+').replace(/_/g, '/');
   const padded = raw + (raw.length % 4 ? '='.repeat(4 - (raw.length % 4)) : '');
@@ -90,7 +99,11 @@ async function enableDevicePush() {
   PUSH_STATE.busy = true;
   try {
     if (pushPermission() !== 'granted') {
-      const result = await Notification.requestPermission();
+      const result = await withTimeout(
+        Notification.requestPermission(),
+        20000,
+        'the browser never answered the permission prompt — allow notifications for this site and try again'
+      );
       if (result !== 'granted') {
         toast('Notification permission was not granted. You can allow it in your browser site settings.', 'danger');
         return false;
@@ -100,10 +113,14 @@ async function enableDevicePush() {
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToBytes(PUSH_STATE.publicKey)
-      });
+      sub = await withTimeout(
+        reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToBytes(PUSH_STATE.publicKey)
+        }),
+        20000,
+        'this browser could not reach its push service'
+      );
     }
 
     const res = await fetch('/api/push/subscribe', {

@@ -1006,7 +1006,7 @@ function openSettings() {
         <span class="sw-label">Water reminders (8:00 – 22:00)</span>
       </label>
       <p class="panel-sub" style="margin:4px 0 0;font-size:12.5px">
-        Reminders only fire while this app is open in a tab. Turn on browser alerts too and keep the tab running for full coverage.
+        In-app reminders fire while this app is open. Turn on device notifications below to be reminded even when the tab is closed.
       </p>
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">BACKUP</h2><div class="line"></div></div>

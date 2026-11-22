@@ -5,7 +5,7 @@
    back to the cached shell; static files are cache-first. API calls are
    never cached — sync must fail loudly rather than serve stale records. */
 
-const CACHE = 'system-v2';
+const CACHE = 'system-v4';
 const SHELL = [
   './',
   './index.html',
@@ -53,16 +53,17 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
+  // Network first, cache as the offline fallback. Cache-first here would keep
+  // serving an old app.js/auth.js after a release, which breaks sign-in and
+  // sync fixes until the cache name changes again.
   e.respondWith(
-    caches.match(e.request, { ignoreSearch: true }).then(
-      (hit) =>
-        hit ||
-        fetch(e.request).then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy));
-          return res;
-        })
-    )
+    fetch(e.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        return res;
+      })
+      .catch(() => caches.match(e.request, { ignoreSearch: true }))
   );
 });
 
