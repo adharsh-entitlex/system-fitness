@@ -27,6 +27,8 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { pbkdf2Sync, randomBytes, timingSafeEqual, createHash, randomUUID } from 'node:crypto';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The planner transport is shared with the hosted Worker so the two agree.
+import { cleanMeals, requestAi } from '../worker/ai.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = resolve(ROOT, 'public');
@@ -265,79 +267,6 @@ async function sendPush(userId, payload) {
 
 /* ---------------- AI ---------------- */
 
-/* Mirrors the worker: a Freebuff key or a plain OpenAI key both work, no
-   AI_BASE_URL needed. AI_BASE_URL still wins when set, and the endpoint that
-   rejects the key falls through to the other one. */
-const AI_ENDPOINTS = {
-  freebuff: 'https://freebuff.com/api/v1/paid',
-  openai: 'https://api.openai.com/v1'
-};
-const AI_RETRY_STATUS = [400, 401, 403, 404];
-let aiEndpointCache = '';
-
-function chatUrl(base) {
-  const clean = String(base || '').trim().replace(/\/+$/, '');
-  return /\/chat\/completions$/.test(clean) ? clean : `${clean}/chat/completions`;
-}
-
-function endpointLabel(base) {
-  try {
-    return new URL(base).host;
-  } catch {
-    return String(base);
-  }
-}
-
-function aiEndpoints() {
-  const explicit = String(process.env.AI_BASE_URL || '').trim().replace(/\/+$/, '');
-  const key = String(process.env.OPENAI_API_KEY || '').trim();
-  const guessed = /^sk-/.test(key) ? AI_ENDPOINTS.openai : AI_ENDPOINTS.freebuff;
-  const first = explicit || aiEndpointCache || guessed;
-  const order = [first, guessed, AI_ENDPOINTS.openai, AI_ENDPOINTS.freebuff];
-  return order.filter((base, index) => base && order.indexOf(base) === index);
-}
-
-async function requestAi(body) {
-  const attempts = [];
-  for (const base of aiEndpoints()) {
-    let res;
-    try {
-      res = await fetch(chatUrl(base), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        body: JSON.stringify(body)
-      });
-    } catch (err) {
-      attempts.push(`${endpointLabel(base)}: ${(err && err.message) || err}`);
-      continue;
-    }
-    if (res.ok) {
-      aiEndpointCache = base;
-      return { ok: true, payload: await res.json(), base };
-    }
-    const detail = (await res.text().catch(() => '')).slice(0, 200);
-    console.error('[system] ai request rejected:', endpointLabel(base), res.status, detail);
-    attempts.push(`${endpointLabel(base)} ${res.status}${detail ? `: ${detail}` : ''}`);
-    if (!AI_RETRY_STATUS.includes(res.status)) break;
-  }
-  return { ok: false, detail: attempts.join(' | ').slice(0, 600) };
-}
-
-function cleanMeals(raw) {
-  return (Array.isArray(raw) ? raw : [])
-    .slice(0, 4)
-    .map((meal, i) => ({
-      name: String((meal && meal.name) || `Meal ${i + 1}`).slice(0, 90),
-      kcal: Math.max(0, Math.round(Number(meal && meal.kcal) || 0)),
-      protein: Math.max(0, Math.round(Number(meal && meal.protein) || 0)),
-      carbs: Math.max(0, Math.round(Number(meal && meal.carbs) || 0)),
-      ingredients: (Array.isArray(meal && meal.ingredients) ? meal.ingredients : []).map((x) => String(x).slice(0, 40)).slice(0, 12),
-      steps: (Array.isArray(meal && meal.steps) ? meal.steps : []).map((x) => String(x).slice(0, 200)).slice(0, 5),
-      why: String((meal && (meal.why || meal.note)) || '').slice(0, 260)
-    }))
-    .filter((meal) => meal.name && (meal.kcal > 0 || meal.protein > 0));
-}
-
 /* ---------------- routes ---------------- */
 
 async function handleAi(req, res, user) {
@@ -383,7 +312,7 @@ async function handleAi(req, res, user) {
     .filter(Boolean)
     .join(' ');
 
-  const result = await requestAi({
+  const result = await requestAi(process.env, {
     model: process.env.AI_MODEL || 'gpt-4o-mini',
     temperature: 0.5,
     max_tokens: 900,

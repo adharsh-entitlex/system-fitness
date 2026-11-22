@@ -48,6 +48,7 @@ import {
   verifyPassword
 } from './auth.js';
 import { pushConfigured, pushUser } from './push.js';
+import { cleanMeals, requestAi } from './ai.js';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' };
 const PUBLIC_JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
@@ -333,88 +334,6 @@ async function handleState(request, env, user) {
 }
 
 /* ---------------- AI meal planner ---------------- */
-
-/* Either key works with no extra configuration: the Freebuff paid endpoint for
-   a Freebuff key, api.openai.com for a plain OpenAI key. AI_BASE_URL still wins
-   when set, and whichever endpoint rejects the key falls through to the other. */
-const AI_ENDPOINTS = {
-  freebuff: 'https://freebuff.com/api/v1/paid',
-  openai: 'https://api.openai.com/v1'
-};
-const AI_RETRY_STATUS = [400, 401, 403, 404];
-let aiEndpointCache = '';
-
-function chatUrl(base) {
-  const clean = String(base || '').trim().replace(/\/+$/, '');
-  return /\/chat\/completions$/.test(clean) ? clean : `${clean}/chat/completions`;
-}
-
-function endpointLabel(base) {
-  try {
-    return new URL(base).host;
-  } catch {
-    return String(base);
-  }
-}
-
-export function aiEndpoints(env) {
-  const explicit = String((env && env.AI_BASE_URL) || '').trim().replace(/\/+$/, '');
-  const key = String((env && env.OPENAI_API_KEY) || '').trim();
-  const guessed = /^sk-/.test(key) ? AI_ENDPOINTS.openai : AI_ENDPOINTS.freebuff;
-  const first = explicit || aiEndpointCache || guessed;
-  const order = [first, guessed, AI_ENDPOINTS.openai, AI_ENDPOINTS.freebuff];
-  return order.filter((base, index) => base && order.indexOf(base) === index);
-}
-
-async function requestAi(env, body) {
-  const attempts = [];
-  for (const base of aiEndpoints(env)) {
-    let res;
-    try {
-      res = await fetch(chatUrl(base), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${env.OPENAI_API_KEY}`
-        },
-        body: JSON.stringify(body)
-      });
-    } catch (err) {
-      attempts.push(`${endpointLabel(base)}: ${(err && err.message) || err}`);
-      continue;
-    }
-    if (res.ok) {
-      aiEndpointCache = base;
-      return { ok: true, payload: await res.json(), base };
-    }
-    const detail = (await res.text().catch(() => '')).slice(0, 200);
-    console.error('[system] ai request rejected:', endpointLabel(base), res.status, detail);
-    attempts.push(`${endpointLabel(base)} ${res.status}${detail ? `: ${detail}` : ''}`);
-    // A rate limit or an outage is not a key problem, so do not hammer the other host.
-    if (!AI_RETRY_STATUS.includes(res.status)) break;
-  }
-  return { ok: false, detail: attempts.join(' | ').slice(0, 600) };
-}
-
-function cleanMeals(raw) {
-  const list = Array.isArray(raw) ? raw : [];
-  return list
-    .slice(0, 4)
-    .map((meal, index) => ({
-      name: String((meal && meal.name) || `Meal ${index + 1}`).slice(0, 90),
-      kcal: Math.max(0, Math.round(Number(meal && meal.kcal) || 0)),
-      protein: Math.max(0, Math.round(Number(meal && meal.protein) || 0)),
-      carbs: Math.max(0, Math.round(Number(meal && meal.carbs) || 0)),
-      ingredients: (Array.isArray(meal && meal.ingredients) ? meal.ingredients : [])
-        .map((item) => String(item).slice(0, 40))
-        .slice(0, 12),
-      steps: (Array.isArray(meal && meal.steps) ? meal.steps : [])
-        .map((item) => String(item).slice(0, 200))
-        .slice(0, 5),
-      why: String((meal && (meal.why || meal.note)) || '').slice(0, 260)
-    }))
-    .filter((meal) => meal.name && (meal.kcal > 0 || meal.protein > 0));
-}
 
 async function handleAiSuggest(request, env, user) {
   const { body, error, status } = await readBody(request);

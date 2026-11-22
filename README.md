@@ -8,6 +8,9 @@ a CI-built Android app.
 
 - **Daily quests** — workouts from a library, weekly schedule, XP, ranks,
   streaks, 84-day quest map.
+- **Body profile & BMI** — the first run asks for height, weight and goal
+  (lose fat, maintain, build muscle); that calibrates BMI and the daily calorie,
+  protein and water targets, which stay editable in Settings.
 - **Nutrition** — calories/protein meters, meal log, quick add, a Kerala dish
   database, and an editable pantry.
 - **AI meal plan** — reads your pantry, what you have eaten, your remaining

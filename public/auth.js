@@ -44,7 +44,11 @@ function renderAuthScreen() {
   const blocked = auth.checked && !auth.user && !auth.guest;
   screen.hidden = !blocked;
   document.body.classList.toggle('is-locked', blocked);
-  if (!blocked) return;
+  if (!blocked) {
+    // The first-run height/weight/goal ask waits until access is settled.
+    if (auth.checked && typeof maybeOpenProfileSetup === 'function') maybeOpenProfileSetup();
+    return;
+  }
 
   const signin = document.querySelector('[data-auth-form="signin"]');
   const signup = document.querySelector('[data-auth-form="signup"]');

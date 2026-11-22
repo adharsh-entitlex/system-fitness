@@ -57,6 +57,7 @@ function defaultState() {
     hunter: 'Adharsh M',
     xp: 0,
     goals: { water: 2500, weekly: 4 },
+    profile: { heightCm: 0, weightKg: 0, goal: 'maintain' },
     schedule: { 0: null, 1: 'push', 2: 'pull', 3: null, 4: 'legs', 5: 'push', 6: null },
     templates: JSON.parse(JSON.stringify(DEFAULT_TEMPLATES)),
     logs: {},
@@ -84,6 +85,7 @@ function normalizeState(parsed) {
     ...base,
     ...src,
     goals: { ...base.goals, ...(src.goals || {}) },
+    profile: { ...base.profile, ...(src.profile || {}) },
     reminders: { ...base.reminders, ...(src.reminders || {}) },
     schedule: { ...base.schedule, ...(src.schedule || {}) },
     templates: Array.isArray(src.templates) && src.templates.length ? src.templates : base.templates,
@@ -277,6 +279,143 @@ function grantXp(amount) {
   }
 }
 
+/* ---------------- body profile & BMI ---------------- */
+
+const PROFILE_GOALS = [
+  ['lose', 'LOSE FAT'],
+  ['maintain', 'MAINTAIN'],
+  ['gain', 'BUILD MUSCLE']
+];
+
+function profileOf() {
+  const p = state.profile || {};
+  return {
+    heightCm: Number(p.heightCm) || 0,
+    weightKg: Number(p.weightKg) || 0,
+    goal: PROFILE_GOALS.some(([value]) => value === p.goal) ? p.goal : 'maintain'
+  };
+}
+
+function bmiOf(p) {
+  const height = (Number(p && p.heightCm) || 0) / 100;
+  const weight = Number(p && p.weightKg) || 0;
+  if (!(height > 0) || !(weight > 0)) return 0;
+  const bmi = weight / (height * height);
+  return Number.isFinite(bmi) ? bmi : 0;
+}
+
+function bmiBand(bmi) {
+  if (!(bmi > 0)) return { label: 'NO DATA', tone: 'muted' };
+  if (bmi < 18.5) return { label: 'UNDERWEIGHT', tone: 'low' };
+  if (bmi < 25) return { label: 'NORMAL', tone: 'good' };
+  if (bmi < 30) return { label: 'OVERWEIGHT', tone: 'high' };
+  return { label: 'OBESE', tone: 'high' };
+}
+
+function profileComplete() {
+  const p = profileOf();
+  return p.heightCm >= 120 && p.weightKg >= 30;
+}
+
+/* Daily targets follow body weight, adjusted by the goal. Manual entries in
+   Settings still win because saveSettings() reads them afterwards. */
+function applyProfileTargets() {
+  const p = profileOf();
+  if (!(p.weightKg > 0)) return;
+  const kcalPerKg = p.goal === 'lose' ? 26 : p.goal === 'gain' ? 34 : 30;
+  const proteinPerKg = p.goal === 'gain' ? 2 : p.goal === 'lose' ? 1.8 : 1.6;
+  state.nutrition.kcal = Math.round((p.weightKg * kcalPerKg) / 50) * 50;
+  state.nutrition.protein = Math.round((p.weightKg * proteinPerKg) / 5) * 5;
+  state.goals.water = Math.round(Math.min(5000, Math.max(1500, p.weightKg * 35)) / 50) * 50;
+}
+
+function readProfileInputs() {
+  const height = Number($('[data-profile="height"]')?.value);
+  const weight = Number($('[data-profile="weight"]')?.value);
+  const goal = $('[data-profile="goal"]')?.value;
+  const validHeight = Number.isFinite(height) && height >= 120 && height <= 230;
+  const validWeight = Number.isFinite(weight) && weight >= 30 && weight <= 250;
+  if (!validHeight && !validWeight) return null;
+  const next = profileOf();
+  return {
+    heightCm: validHeight ? Math.round(height * 10) / 10 : next.heightCm,
+    weightKg: validWeight ? Math.round(weight * 10) / 10 : next.weightKg,
+    goal: PROFILE_GOALS.some(([value]) => value === goal) ? goal : next.goal
+  };
+}
+
+function bmiLine(p) {
+  const bmi = bmiOf(p);
+  if (!bmi) return 'Enter your height and weight to see your BMI.';
+  const band = bmiBand(bmi);
+  return `BMI <b>${bmi.toFixed(1)}</b> · ${band.label}. Saving also sets daily calories, protein and water for this body.`;
+}
+
+function profileFieldsHtml() {
+  const p = profileOf();
+  const options = PROFILE_GOALS.map(
+    ([value, label]) => `<option value="${value}"${p.goal === value ? ' selected' : ''}>${label}</option>`
+  ).join('');
+  return `
+      <div class="form-grid two">
+        <label class="field"><span class="lbl">HEIGHT (CM)</span>
+          <input type="number" min="120" max="230" step="0.5" inputmode="decimal" data-profile="height" value="${p.heightCm || ''}" />
+        </label>
+        <label class="field"><span class="lbl">WEIGHT (KG)</span>
+          <input type="number" min="30" max="250" step="0.1" inputmode="decimal" data-profile="weight" value="${p.weightKg || ''}" />
+        </label>
+      </div>
+      <label class="field"><span class="lbl">GOAL</span>
+        <select data-profile="goal">${options}</select>
+      </label>
+      <p class="panel-sub" id="bmiPreview" style="margin:2px 0 0;font-size:12.5px">${bmiLine(p)}</p>`;
+}
+
+function openProfileSetup() {
+  openModal(`
+    <h2>HUNTER PROFILE</h2>
+    <div class="sub">Height, weight and goal calibrate your BMI and your daily targets.</div>
+    <div class="form-grid">
+      ${profileFieldsHtml()}
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="save-profile">SAVE PROFILE</button>
+      <button class="btn ghost" data-act="modal-close">LATER</button>
+    </div>
+  `);
+}
+
+let profilePrompted = false;
+
+/* Asked once per page load, and only once the sign-in gate is out of the way. */
+function maybeOpenProfileSetup() {
+  if (profilePrompted) return;
+  const gate = $('#authScreen');
+  if (gate && !gate.hidden) return;
+  const root = $('#modalRoot');
+  if (root && !root.hidden) return;
+  profilePrompted = true;
+  if (profileComplete()) return;
+  openProfileSetup();
+}
+
+function saveProfile() {
+  const rawHeight = Number($('[data-profile="height"]')?.value);
+  const rawWeight = Number($('[data-profile="weight"]')?.value);
+  if (!(rawHeight >= 120 && rawHeight <= 230) || !(rawWeight >= 30 && rawWeight <= 250)) {
+    toast('Enter a height of 120–230 cm and a weight of 30–250 kg.', 'danger');
+    return;
+  }
+  const profile = readProfileInputs();
+  if (!profile) return;
+  state.profile = profile;
+  applyProfileTargets();
+  save();
+  closeModal();
+  renderAll();
+  toast(`BMI ${bmiOf(profile).toFixed(1)} · ${bmiBand(bmiOf(profile)).label}. Targets updated.`, 'gold');
+}
+
 /* ---------------- notifications & toasts ---------------- */
 
 function toast(message, kind = '') {
@@ -463,6 +602,7 @@ function renderToday() {
       <div class="stat"><div class="k">STREAK</div><div class="v">${streak} <small>DAY${streak === 1 ? '' : 'S'}</small></div></div>
       <div class="stat"><div class="k">THIS WEEK</div><div class="v">${week} <small>/ ${state.goals.weekly}</small></div></div>
       <div class="stat"><div class="k">WATER TODAY</div><div class="v">${(drank / 1000).toFixed(2)} <small>L</small></div></div>
+      <div class="stat"><div class="k">BMI</div><div class="v">${bmiOf(profileOf()) ? bmiOf(profileOf()).toFixed(1) : '—'} <small>${bmiBand(bmiOf(profileOf())).label}</small></div></div>
       <div class="stat"><div class="k">QUESTS CLEARED</div><div class="v">${completedTotal()}</div></div>
     </div>
 
@@ -976,6 +1116,8 @@ function openSettings() {
       <label class="field"><span class="lbl">HUNTER NAME</span>
         <input type="text" data-set="name" value="${esc(state.hunter)}" />
       </label>
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">BODY &amp; BMI</h2><div class="line"></div></div>
+      ${profileFieldsHtml()}
       <div class="form-grid two">
         <label class="field"><span class="lbl">DAILY WATER GOAL (ML)</span>
           <input type="number" min="500" max="8000" step="100" data-set="water" value="${state.goals.water}" />
@@ -1065,11 +1207,30 @@ function openSettings() {
 function saveSettings() {
   const name = ($('[data-set="name"]')?.value || '').trim();
   state.hunter = name || 'HUNTER';
-  state.goals.water = clampNum($('[data-set="water"]')?.value, 500, 8000, 2500);
+  const before = { water: state.goals.water, kcal: state.nutrition.kcal, protein: state.nutrition.protein };
+  const typed = {
+    water: Number($('[data-set="water"]')?.value),
+    kcal: Number($('[data-set="kcal"]')?.value),
+    protein: Number($('[data-set="protein"]')?.value)
+  };
+  const profile = readProfileInputs();
+  if (profile) {
+    state.profile = profile;
+    applyProfileTargets();
+  }
+  // A typed target wins only when the hunter actually changed that field;
+  // otherwise a new weight would be immediately overwritten by the stale box.
+  if (Number.isFinite(typed.water) && typed.water !== before.water) {
+    state.goals.water = clampNum(typed.water, 500, 8000, state.goals.water);
+  }
+  if (Number.isFinite(typed.kcal) && typed.kcal !== before.kcal) {
+    state.nutrition.kcal = clampNum(typed.kcal, 1000, 6000, state.nutrition.kcal);
+  }
+  if (Number.isFinite(typed.protein) && typed.protein !== before.protein) {
+    state.nutrition.protein = clampNum(typed.protein, 40, 400, state.nutrition.protein);
+  }
   state.goals.weekly = clampNum($('[data-set="weekly"]')?.value, 1, 14, 4);
   state.reminders.everyMin = clampNum($('[data-set="every"]')?.value, 15, 360, 90);
-  state.nutrition.kcal = clampNum($('[data-set="kcal"]')?.value, 1000, 6000, 2200);
-  state.nutrition.protein = clampNum($('[data-set="protein"]')?.value, 40, 400, 140);
   save();
   closeModal();
   renderAll();
@@ -1170,6 +1331,7 @@ document.addEventListener('click', async (e) => {
     }
 
     case 'save-settings': saveSettings(); break;
+    case 'save-profile': saveProfile(); break;
     case 'export-backup': exportBackup(); break;
     case 'import-backup': {
       const input = $('[data-backup-file]');
@@ -1218,6 +1380,15 @@ document.addEventListener('change', (e) => {
     save();
     if (el.checked) requestNotifyPermission();
   }
+});
+
+document.addEventListener('input', (e) => {
+  if (!e.target.matches || !e.target.matches('[data-profile]')) return;
+  const line = $('#bmiPreview');
+  if (!line) return;
+  const height = Number($('[data-profile="height"]')?.value) || 0;
+  const weight = Number($('[data-profile="weight"]')?.value) || 0;
+  line.innerHTML = bmiLine({ heightCm: height, weightKg: weight });
 });
 
 document.addEventListener('change', (e) => {
