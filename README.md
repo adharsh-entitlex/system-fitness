@@ -38,9 +38,15 @@ VAPID_PUBLIC_KEY=...      # npm run vapid  (printed pair; keep these stable)
 VAPID_PRIVATE_KEY=...
 VAPID_SUBJECT=mailto:you@example.com
 OPENAI_API_KEY=...        # turns the AI planner on
-AI_BASE_URL=https://freebuff.com/api/v1/paid   # any OpenAI-compatible base
 AI_MODEL=gpt-4o-mini
 ```
+
+The planner works out where to send the request from the key itself: a `sk-…`
+OpenAI key goes to `https://api.openai.com/v1`, anything else (a Freebuff key)
+goes to the Freebuff paid endpoint. If the chosen endpoint rejects the key with
+400/401/403/404 the request is retried on the other one, so no base URL needs
+setting. `AI_BASE_URL=…` is only for some other OpenAI-compatible provider and
+still takes priority.
 
 To run the real worker (D1 included) instead:
 
@@ -74,7 +80,7 @@ Secrets (Sites → Secrets) — deploy once *before* setting them:
 | `VAPID_PUBLIC_KEY` | device notifications | `npm run vapid`, already set |
 | `VAPID_PRIVATE_KEY` | device notifications | keep stable; rotating it drops old subscriptions |
 | `VAPID_SUBJECT` | device notifications | `mailto:` or an `https:` URL |
-| `OPENAI_API_KEY` | AI meal plan | any OpenAI-compatible key; the planner returns a setup hint until it exists |
+| `OPENAI_API_KEY` | AI meal plan | a Freebuff key or a plain OpenAI (`sk-…`) key; both work with no other setting, and the planner returns a setup hint until the secret exists |
 | `GOOGLE_CLIENT_ID` | Google sign-in | optional |
 | `GOOGLE_CLIENT_SECRET` | Google sign-in | optional |
 

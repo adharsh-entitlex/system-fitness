@@ -334,9 +334,66 @@ async function handleState(request, env, user) {
 
 /* ---------------- AI meal planner ---------------- */
 
-function aiBase(env) {
-  const raw = String(env.AI_BASE_URL || 'https://freebuff.com/api/v1/paid').replace(/\/$/, '');
-  return /\/chat\/completions$/.test(raw) ? raw : `${raw}/chat/completions`;
+/* Either key works with no extra configuration: the Freebuff paid endpoint for
+   a Freebuff key, api.openai.com for a plain OpenAI key. AI_BASE_URL still wins
+   when set, and whichever endpoint rejects the key falls through to the other. */
+const AI_ENDPOINTS = {
+  freebuff: 'https://freebuff.com/api/v1/paid',
+  openai: 'https://api.openai.com/v1'
+};
+const AI_RETRY_STATUS = [400, 401, 403, 404];
+let aiEndpointCache = '';
+
+function chatUrl(base) {
+  const clean = String(base || '').trim().replace(/\/+$/, '');
+  return /\/chat\/completions$/.test(clean) ? clean : `${clean}/chat/completions`;
+}
+
+function endpointLabel(base) {
+  try {
+    return new URL(base).host;
+  } catch {
+    return String(base);
+  }
+}
+
+export function aiEndpoints(env) {
+  const explicit = String((env && env.AI_BASE_URL) || '').trim().replace(/\/+$/, '');
+  const key = String((env && env.OPENAI_API_KEY) || '').trim();
+  const guessed = /^sk-/.test(key) ? AI_ENDPOINTS.openai : AI_ENDPOINTS.freebuff;
+  const first = explicit || aiEndpointCache || guessed;
+  const order = [first, guessed, AI_ENDPOINTS.openai, AI_ENDPOINTS.freebuff];
+  return order.filter((base, index) => base && order.indexOf(base) === index);
+}
+
+async function requestAi(env, body) {
+  const attempts = [];
+  for (const base of aiEndpoints(env)) {
+    let res;
+    try {
+      res = await fetch(chatUrl(base), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      attempts.push(`${endpointLabel(base)}: ${(err && err.message) || err}`);
+      continue;
+    }
+    if (res.ok) {
+      aiEndpointCache = base;
+      return { ok: true, payload: await res.json(), base };
+    }
+    const detail = (await res.text().catch(() => '')).slice(0, 200);
+    console.error('[system] ai request rejected:', endpointLabel(base), res.status, detail);
+    attempts.push(`${endpointLabel(base)} ${res.status}${detail ? `: ${detail}` : ''}`);
+    // A rate limit or an outage is not a key problem, so do not hammer the other host.
+    if (!AI_RETRY_STATUS.includes(res.status)) break;
+  }
+  return { ok: false, detail: attempts.join(' | ').slice(0, 600) };
 }
 
 function cleanMeals(raw) {
@@ -415,34 +472,26 @@ async function handleAiSuggest(request, env, user) {
     .filter(Boolean)
     .join(' ');
 
-  let payload;
-  try {
-    const res = await fetch(aiBase(env), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`
+  const result = await requestAi(env, {
+    model: env.AI_MODEL || 'gpt-4o-mini',
+    temperature: 0.5,
+    max_tokens: 900,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt }
+    ]
+  });
+  if (!result.ok) {
+    return json(
+      {
+        error: 'AI request failed for both the Freebuff and OpenAI endpoints.',
+        detail: result.detail
       },
-      body: JSON.stringify({
-        model: env.AI_MODEL || 'gpt-4o-mini',
-        temperature: 0.5,
-        max_tokens: 900,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: prompt }
-        ]
-      })
-    });
-    if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      console.error('[system] ai request failed:', res.status, detail);
-      return json({ error: `AI request failed (${res.status}).`, detail }, 502);
-    }
-    payload = await res.json();
-  } catch (err) {
-    return json({ error: `AI request failed: ${(err && err.message) || err}` }, 502);
+      502
+    );
   }
+  const payload = result.payload;
 
   await env.DB.prepare(
     `INSERT INTO ai_usage (user_id, day, count) VALUES (?, ?, 1)

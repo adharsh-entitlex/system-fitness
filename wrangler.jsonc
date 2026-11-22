@@ -9,9 +9,10 @@
   // The hosted deployment injects its own APP_ORIGIN.
   // Secrets (OPENAI_API_KEY, VAPID_*, GOOGLE_*) belong in .dev.vars locally
   // and in Sites → Secrets once deployed — never in this file.
+  // The planner picks its endpoint from the key itself (Freebuff key or OpenAI
+  // key), so AI_BASE_URL is only needed for some other compatible provider.
   "vars": {
     "APP_ORIGIN": "http://localhost:8787",
-    "AI_BASE_URL": "https://freebuff.com/api/v1/paid",
     "AI_MODEL": "gpt-4o-mini"
   },
   // Water reminders while the app is closed. The client also asks the server

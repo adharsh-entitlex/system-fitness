@@ -265,9 +265,62 @@ async function sendPush(userId, payload) {
 
 /* ---------------- AI ---------------- */
 
-function aiBase() {
-  const raw = String(process.env.AI_BASE_URL || 'https://freebuff.com/api/v1/paid').replace(/\/$/, '');
-  return /\/chat\/completions$/.test(raw) ? raw : `${raw}/chat/completions`;
+/* Mirrors the worker: a Freebuff key or a plain OpenAI key both work, no
+   AI_BASE_URL needed. AI_BASE_URL still wins when set, and the endpoint that
+   rejects the key falls through to the other one. */
+const AI_ENDPOINTS = {
+  freebuff: 'https://freebuff.com/api/v1/paid',
+  openai: 'https://api.openai.com/v1'
+};
+const AI_RETRY_STATUS = [400, 401, 403, 404];
+let aiEndpointCache = '';
+
+function chatUrl(base) {
+  const clean = String(base || '').trim().replace(/\/+$/, '');
+  return /\/chat\/completions$/.test(clean) ? clean : `${clean}/chat/completions`;
+}
+
+function endpointLabel(base) {
+  try {
+    return new URL(base).host;
+  } catch {
+    return String(base);
+  }
+}
+
+function aiEndpoints() {
+  const explicit = String(process.env.AI_BASE_URL || '').trim().replace(/\/+$/, '');
+  const key = String(process.env.OPENAI_API_KEY || '').trim();
+  const guessed = /^sk-/.test(key) ? AI_ENDPOINTS.openai : AI_ENDPOINTS.freebuff;
+  const first = explicit || aiEndpointCache || guessed;
+  const order = [first, guessed, AI_ENDPOINTS.openai, AI_ENDPOINTS.freebuff];
+  return order.filter((base, index) => base && order.indexOf(base) === index);
+}
+
+async function requestAi(body) {
+  const attempts = [];
+  for (const base of aiEndpoints()) {
+    let res;
+    try {
+      res = await fetch(chatUrl(base), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      attempts.push(`${endpointLabel(base)}: ${(err && err.message) || err}`);
+      continue;
+    }
+    if (res.ok) {
+      aiEndpointCache = base;
+      return { ok: true, payload: await res.json(), base };
+    }
+    const detail = (await res.text().catch(() => '')).slice(0, 200);
+    console.error('[system] ai request rejected:', endpointLabel(base), res.status, detail);
+    attempts.push(`${endpointLabel(base)} ${res.status}${detail ? `: ${detail}` : ''}`);
+    if (!AI_RETRY_STATUS.includes(res.status)) break;
+  }
+  return { ok: false, detail: attempts.join(' | ').slice(0, 600) };
 }
 
 function cleanMeals(raw) {
@@ -330,30 +383,23 @@ async function handleAi(req, res, user) {
     .filter(Boolean)
     .join(' ');
 
-  let payload;
-  try {
-    const response = await fetch(aiBase(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify({
-        model: process.env.AI_MODEL || 'gpt-4o-mini',
-        temperature: 0.5,
-        max_tokens: 900,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: prompt }
-        ]
-      })
+  const result = await requestAi({
+    model: process.env.AI_MODEL || 'gpt-4o-mini',
+    temperature: 0.5,
+    max_tokens: 900,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt }
+    ]
+  });
+  if (!result.ok) {
+    return sendJson(res, 502, {
+      error: 'AI request failed for both the Freebuff and OpenAI endpoints.',
+      detail: result.detail
     });
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 300);
-      return sendJson(res, 502, { error: `AI request failed (${response.status}).`, detail });
-    }
-    payload = await response.json();
-  } catch (err) {
-    return sendJson(res, 502, { error: `AI request failed: ${err.message}` });
   }
+  const payload = result.payload;
 
   db.aiUsage[`${user.id}:${day}`] = used + 1;
   queueWrite();
