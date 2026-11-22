@@ -7,7 +7,7 @@
     "binding": "ASSETS"
   },
   "vars": {
-    "AI_MODEL": "openai/gpt-oss-20b"
+    "AI_MODEL": "qwen/qwen3.8-27b"
   },
   // Water reminders while the app is closed. The client also asks the server
   // on open (/api/push/tick), so reminders survive hosts without cron.
