@@ -6,14 +6,6 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
-  // The hosted deployment injects its own APP_ORIGIN.
-  // Secrets (OPENAI_API_KEY, VAPID_*, GOOGLE_*) belong in .dev.vars locally
-  // and in Sites → Secrets once deployed — never in this file.
-  // The planner picks its endpoint from the key itself (Freebuff key or OpenAI
-  // key), so AI_BASE_URL is only needed for some other compatible provider.
-  // AI_MODEL is optional: each provider gets its own default model, so a
-  // Groq key (gsk_…) asks for a Groq model instead of an OpenAI one.
-
   // Water reminders while the app is closed. The client also asks the server
   // on open (/api/push/tick), so reminders survive hosts without cron.
   "triggers": {
@@ -26,12 +18,4 @@
       "database_id": "482f6087-5f62-4e38-be95-44b12ca8d691"
     }
   ]
-}
-{
-  "observability": {
-    "logs": {
-      "enabled": true,
-      "invocation_logs": true
-    }
-  }
 }
