@@ -6,14 +6,13 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
+  "vars": {
+    "AI_MODEL": "openai/gpt-oss-20b"
+  },
   // Water reminders while the app is closed. The client also asks the server
   // on open (/api/push/tick), so reminders survive hosts without cron.
   "triggers": {
     "crons": ["*/15 * * * *"]
-  },
-  "vars": {
-    "AI_BASE_URL": "https://api.x.ai/v1",
-    "AI_MODEL": "<a model name from your xAI console>"
   },
   "d1_databases": [
     {
