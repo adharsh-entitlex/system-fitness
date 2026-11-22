@@ -106,6 +106,10 @@ jobs:
             echo "Paste that SHA-256 into \`TWA_FINGERPRINT\` (Sites project variables) so the"
             echo "installed app opens without a browser address bar."
           } >> "$GITHUB_STEP_SUMMARY"
+          # Also echo it into the job log so a release can be wired up without
+          # opening the summary by hand. A certificate digest is public.
+          keytool -list -v -keystore android.keystore -alias "$KEY_ALIAS" \
+            -storepass "$KEYSTORE_PASSWORD" | grep -E 'SHA256|SHA-256'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
