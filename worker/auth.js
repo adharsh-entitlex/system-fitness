@@ -15,7 +15,7 @@ const encoder = new TextEncoder();
 export const SESSION_COOKIE = 'sys_session';
 export const OAUTH_COOKIE = 'sys_oauth';
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
-const PBKDF2_ROUNDS = 120000;
+const PBKDF2_ROUNDS = 100000;
 
 /* ---------------- encodings ---------------- */
 
