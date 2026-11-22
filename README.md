@@ -40,16 +40,24 @@ Optional local secrets go in `.dev.vars` (or `.env`):
 VAPID_PUBLIC_KEY=...      # npm run vapid  (printed pair; keep these stable)
 VAPID_PRIVATE_KEY=...
 VAPID_SUBJECT=mailto:you@example.com
-OPENAI_API_KEY=...        # turns the AI planner on
-AI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=...        # turns the AI planner on (any of the keys below)
 ```
 
-The planner works out where to send the request from the key itself: a `sk-…`
-OpenAI key goes to `https://api.openai.com/v1`, anything else (a Freebuff key)
-goes to the Freebuff paid endpoint. If the chosen endpoint rejects the key with
-400/401/403/404 the request is retried on the other one, so no base URL needs
+The planner works out where to send the request from the key itself: a `gsk_…`
+key goes to Groq, a `sk-…` OpenAI key to `https://api.openai.com/v1`, anything
+else (a Freebuff key) to the Freebuff paid endpoint. Each provider gets its own
+default model (`openai/gpt-oss-120b` on Groq, `gpt-4o-mini` elsewhere) unless
+`AI_MODEL` says otherwise. If the chosen endpoint rejects the key with
+400/401/403/404 the request is retried on the others, so no base URL needs
 setting. `AI_BASE_URL=…` is only for some other OpenAI-compatible provider and
 still takes priority.
+
+**Free keys.** Groq has a free plan with no card: create a key at
+<https://console.groq.com/keys> and put it in `OPENAI_API_KEY`. Free models there
+are `openai/gpt-oss-120b`, `openai/gpt-oss-20b` and `qwen/qwen3.8-27b`, at about
+30 requests/minute and 1,000/day per model — far more than a meal planner needs.
+Google AI Studio (Gemini) and OpenRouter (`:free` models) also speak the OpenAI
+format, but need `AI_BASE_URL` set.
 
 To run the real worker (D1 included) instead:
 
@@ -62,7 +70,13 @@ Checks:
 
 ```bash
 node scripts/test-push.mjs     # Web Push encryption + VAPID JWT round trip
+npm run check:secrets          # tracked files hold no credentials
 ```
+
+`npm install` points git at `.githooks/`, so `git commit` runs that credential
+check before the commit exists and refuses a `.dev.vars`, `.env`, keystore or a
+pasted key. The `Secret guard` workflow runs the same script on every push and
+pull request, for the case where the hook was never installed.
 
 ## Hosting
 
@@ -83,7 +97,7 @@ Secrets (Sites → Secrets) — deploy once *before* setting them:
 | `VAPID_PUBLIC_KEY` | device notifications | `npm run vapid`, already set |
 | `VAPID_PRIVATE_KEY` | device notifications | keep stable; rotating it drops old subscriptions |
 | `VAPID_SUBJECT` | device notifications | `mailto:` or an `https:` URL |
-| `OPENAI_API_KEY` | AI meal plan | a Freebuff key or a plain OpenAI (`sk-…`) key; both work with no other setting, and the planner returns a setup hint until the secret exists |
+| `OPENAI_API_KEY` | AI meal plan | a Freebuff key, a plain OpenAI (`sk-…`) key or a free Groq key (`gsk_…`); the endpoint and model follow the key, and the planner returns a setup hint until the secret exists |
 | `GOOGLE_CLIENT_ID` | Google sign-in | optional |
 | `GOOGLE_CLIENT_SECRET` | Google sign-in | optional |
 

@@ -5,5 +5,16 @@ deploy/
 *.log
 *.tmp
 .env
+.env.*
+!.env.example
+!.env.template
 .dev.vars
+.dev.vars.*
 .secrets/
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+artifacts/

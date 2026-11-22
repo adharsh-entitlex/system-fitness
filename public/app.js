@@ -58,6 +58,7 @@ function defaultState() {
     xp: 0,
     goals: { water: 2500, weekly: 4 },
     profile: { heightCm: 0, weightKg: 0, goal: 'maintain' },
+    weights: {},
     schedule: { 0: null, 1: 'push', 2: 'pull', 3: null, 4: 'legs', 5: 'push', 6: null },
     templates: JSON.parse(JSON.stringify(DEFAULT_TEMPLATES)),
     logs: {},
@@ -86,6 +87,7 @@ function normalizeState(parsed) {
     ...src,
     goals: { ...base.goals, ...(src.goals || {}) },
     profile: { ...base.profile, ...(src.profile || {}) },
+    weights: src.weights && typeof src.weights === 'object' ? src.weights : {},
     reminders: { ...base.reminders, ...(src.reminders || {}) },
     schedule: { ...base.schedule, ...(src.schedule || {}) },
     templates: Array.isArray(src.templates) && src.templates.length ? src.templates : base.templates,
@@ -344,6 +346,91 @@ function readProfileInputs() {
   };
 }
 
+/* ---------------- weight log & trend ---------------- */
+
+function weightEntries() {
+  const raw = state.weights || {};
+  return Object.keys(raw)
+    .filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key))
+    .filter((key) => {
+      const kg = Number(raw[key]);
+      return Number.isFinite(kg) && kg >= 30 && kg <= 250;
+    })
+    .sort()
+    .map((key) => ({ key, kg: Math.round(Number(raw[key]) * 10) / 10 }));
+}
+
+function recordWeight(kg) {
+  const value = Math.round(Number(kg) * 10) / 10;
+  if (!(value >= 30 && value <= 250)) return;
+  state.weights = state.weights || {};
+  state.weights[todayKey()] = value;
+}
+
+function weightDelta(entries) {
+  if (entries.length < 2) return null;
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  const days = Math.max(1, Math.round((parseKey(last.key) - parseKey(first.key)) / 86400000));
+  return { first, last, days, kg: Math.round((last.kg - first.kg) * 10) / 10 };
+}
+
+function bmiAt(kg) {
+  const height = profileOf().heightCm / 100;
+  if (!(height > 0) || !(kg > 0)) return 0;
+  const bmi = kg / (height * height);
+  return Number.isFinite(bmi) ? bmi : 0;
+}
+
+function weightSpark(entries) {
+  const points = entries.slice(-16);
+  if (points.length < 2) {
+    return '<div class="empty" style="margin:0">Log your weight on two different days to plot the trend.</div>';
+  }
+  const w = 320;
+  const h = 96;
+  const pad = 8;
+  const values = points.map((p) => p.kg);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(0.6, max - min);
+  const x = (i) => pad + (i * (w - pad * 2)) / (points.length - 1);
+  const y = (v) => h - pad - ((v - min) / span) * (h - pad * 2);
+  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(p.kg).toFixed(1)}`).join(' ');
+  const area = `${pad},${h - pad} ${line} ${(w - pad).toFixed(1)},${h - pad}`;
+  const dots = points
+    .map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.kg).toFixed(1)}" r="2.6" />`)
+    .join('');
+  return `
+      <svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Weight trend, ${points[0].kg} kg to ${points[points.length - 1].kg} kg">
+        <defs>
+          <linearGradient id="weightGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop stop-color="#5fe6ff" stop-opacity=".4" /><stop offset="1" stop-color="#5fe6ff" stop-opacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon points="${area}" fill="url(#weightGrad)" />
+        <polyline points="${line}" fill="none" stroke="#5fe6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        ${dots}
+      </svg>
+      <div class="spark-axis"><span>${points[0].key}</span><span>${points[points.length - 1].kg} kg · ${points[points.length - 1].key}</span></div>`;
+}
+
+function logWeight() {
+  const raw = Number($('[data-weight-input]')?.value);
+  if (!(raw >= 30 && raw <= 250)) {
+    toast('Enter a weight between 30 and 250 kg.', 'danger');
+    return;
+  }
+  const kg = Math.round(raw * 10) / 10;
+  recordWeight(kg);
+  state.profile = { ...profileOf(), weightKg: kg };
+  applyProfileTargets();
+  save();
+  renderAll();
+  const bmi = bmiOf(state.profile);
+  toast(`Weight logged: ${kg} kg · BMI ${bmi.toFixed(1)} ${bmiBand(bmi).label}.`, 'gold');
+}
+
 function bmiLine(p) {
   const bmi = bmiOf(p);
   if (!bmi) return 'Enter your height and weight to see your BMI.';
@@ -409,6 +496,7 @@ function saveProfile() {
   const profile = readProfileInputs();
   if (!profile) return;
   state.profile = profile;
+  recordWeight(profile.weightKg);
   applyProfileTargets();
   save();
   closeModal();
@@ -758,6 +846,13 @@ function renderProgress() {
       </div>`;
   }).join('');
 
+  const weightLog = weightEntries();
+  const weightTrend = weightDelta(weightLog);
+  const currentWeight = weightLog.length ? weightLog[weightLog.length - 1].kg : profileOf().weightKg;
+  const bmiNow = bmiOf(profileOf());
+  const bmiStart = weightTrend ? bmiAt(weightTrend.first.kg) : 0;
+  const bmiShift = weightTrend && bmiStart ? Math.round((bmiNow - bmiStart) * 10) / 10 : null;
+
   $('#view-progress').innerHTML = `
     <div class="section-head">
       <h2>HUNTER RECORD</h2>
@@ -770,6 +865,38 @@ function renderProgress() {
       <div class="stat"><div class="k">BEST STREAK</div><div class="v">${bestStreak()} <small>D</small></div></div>
       <div class="stat gold"><div class="k">TOTAL XP</div><div class="v">${state.xp}</div></div>
       <div class="stat"><div class="k">QUESTS CLEARED</div><div class="v">${completedTotal()}</div></div>
+    </div>
+
+    <div class="section-head">
+      <h2>BODY · WEIGHT &amp; BMI</h2>
+      <div class="line"></div>
+      <span class="hint">${weightLog.length} weigh-in${weightLog.length === 1 ? '' : 's'}</span>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M4 19h16M6 19V9m6 10V5m6 14v-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          WEIGHT TREND
+        </div>
+        <div class="spacer"></div>
+        <span class="panel-sub">${currentWeight ? `${currentWeight} kg` : 'not logged yet'}</span>
+      </div>
+      ${weightSpark(weightLog)}
+      <div class="stat-grid" style="grid-template-columns:repeat(2,1fr);margin-top:14px">
+        <div class="stat"><div class="k">BMI NOW</div><div class="v">${bmiNow ? bmiNow.toFixed(1) : '—'} <small>${bmiBand(bmiNow).label}</small></div></div>
+        <div class="stat"><div class="k">CHANGE</div><div class="v">${weightTrend ? `${weightTrend.kg > 0 ? '+' : ''}${weightTrend.kg} <small>KG</small>` : '—'}</div></div>
+      </div>
+      <p class="panel-sub" style="margin:10px 0 0;line-height:1.6">
+        ${weightTrend && bmiStart
+          ? `BMI ${bmiStart.toFixed(1)} → ${bmiNow.toFixed(1)} (${bmiShift > 0 ? '+' : ''}${bmiShift}) over ${weightTrend.days} day${weightTrend.days === 1 ? '' : 's'}.`
+          : 'Log your weight now and then; the trend and BMI change build up as you go.'}
+      </p>
+      <div class="weight-log">
+        <label class="field"><span class="lbl">WEIGHT (KG)</span>
+          <input type="number" min="30" max="250" step="0.1" inputmode="decimal" data-weight-input value="${currentWeight || ''}" />
+        </label>
+        <button class="btn primary" data-act="log-weight">LOG WEIGHT</button>
+      </div>
     </div>
 
     <div class="section-head">
@@ -1213,9 +1340,11 @@ function saveSettings() {
     kcal: Number($('[data-set="kcal"]')?.value),
     protein: Number($('[data-set="protein"]')?.value)
   };
+  const beforeWeight = profileOf().weightKg;
   const profile = readProfileInputs();
   if (profile) {
     state.profile = profile;
+    if (profile.weightKg !== beforeWeight) recordWeight(profile.weightKg);
     applyProfileTargets();
   }
   // A typed target wins only when the hunter actually changed that field;
@@ -1332,6 +1461,7 @@ document.addEventListener('click', async (e) => {
 
     case 'save-settings': saveSettings(); break;
     case 'save-profile': saveProfile(); break;
+    case 'log-weight': logWeight(); break;
     case 'export-backup': exportBackup(); break;
     case 'import-backup': {
       const input = $('[data-backup-file]');
@@ -1399,6 +1529,11 @@ document.addEventListener('change', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches && e.target.matches('[data-weight-input]')) {
+    e.preventDefault();
+    logWeight();
+    return;
+  }
   if (e.key === 'Escape' && !$('#modalRoot').hidden) closeModal();
 });
 

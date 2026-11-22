@@ -9,7 +9,9 @@
     "icons": "node scripts/make-icons.mjs",
     "vapid": "node scripts/make-vapid.mjs",
     "build:worker": "node scripts/build-worker.mjs",
-    "worker": "wrangler dev"
+    "worker": "wrangler dev",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "engines": {
     "node": ">=18"

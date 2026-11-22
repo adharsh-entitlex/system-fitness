@@ -11,9 +11,10 @@
   // and in Sites → Secrets once deployed — never in this file.
   // The planner picks its endpoint from the key itself (Freebuff key or OpenAI
   // key), so AI_BASE_URL is only needed for some other compatible provider.
+  // AI_MODEL is optional: each provider gets its own default model, so a
+  // Groq key (gsk_…) asks for a Groq model instead of an OpenAI one.
   "vars": {
-    "APP_ORIGIN": "http://localhost:8787",
-    "AI_MODEL": "gpt-4o-mini"
+    "APP_ORIGIN": "http://localhost:8787"
   },
   // Water reminders while the app is closed. The client also asks the server
   // on open (/api/push/tick), so reminders survive hosts without cron.

@@ -392,7 +392,6 @@ async function handleAiSuggest(request, env, user) {
     .join(' ');
 
   const result = await requestAi(env, {
-    model: env.AI_MODEL || 'gpt-4o-mini',
     temperature: 0.5,
     max_tokens: 900,
     response_format: { type: 'json_object' },
@@ -404,7 +403,7 @@ async function handleAiSuggest(request, env, user) {
   if (!result.ok) {
     return json(
       {
-        error: 'AI request failed for both the Freebuff and OpenAI endpoints.',
+        error: 'AI request failed for every configured endpoint.',
         detail: result.detail
       },
       502
@@ -440,7 +439,7 @@ async function handleAiSuggest(request, env, user) {
 
   return json({
     meals,
-    model: env.AI_MODEL || 'gpt-4o-mini',
+    model: result.model || 'gpt-4o-mini',
     remaining: { kcal: remainingKcal, protein: remainingProtein },
     usedToday: Number(used && used.count) + 1,
     limit: AI_DAILY_LIMIT
