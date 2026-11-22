@@ -6,12 +6,18 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
-  // Public development client from `sites_enable_auth` (loopback only).
-  // The hosted deployment gets its own values injected on deploy.
+  // The hosted deployment injects its own APP_ORIGIN.
+  // Secrets (OPENAI_API_KEY, VAPID_*, GOOGLE_*) belong in .dev.vars locally
+  // and in Sites → Secrets once deployed — never in this file.
   "vars": {
-    "FREEBUFF_CLIENT_ID": "5c1f5c36-ea22-4df0-8b69-90492942b0f0",
-    "FREEBUFF_ISSUER": "https://freebuff.com/oidc",
-    "APP_ORIGIN": "http://localhost:8787"
+    "APP_ORIGIN": "http://localhost:8787",
+    "AI_BASE_URL": "https://freebuff.com/api/v1/paid",
+    "AI_MODEL": "gpt-4o-mini"
+  },
+  // Water reminders while the app is closed. The client also asks the server
+  // on open (/api/push/tick), so reminders survive hosts without cron.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
   },
   "d1_databases": [
     {

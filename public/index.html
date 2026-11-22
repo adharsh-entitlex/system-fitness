@@ -80,8 +80,8 @@
   </footer>
 </div>
 
-<div class="gate" id="authGate" hidden>
-  <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+<div class="gate" id="authScreen" hidden>
+  <div class="gate-card auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
     <svg class="gate-sigil" viewBox="0 0 48 48" fill="none" aria-hidden="true">
       <path d="M24 3 44 14v20L24 45 4 34V14L24 3Z" stroke="url(#gg)" stroke-width="1.5" />
       <path d="M24 17v14M18 24h12" stroke="#5fe6ff" stroke-width="1.6" stroke-linecap="round" />
@@ -91,12 +91,55 @@
         </linearGradient>
       </defs>
     </svg>
-    <h1 id="gateTitle">SYSTEM LOCKED</h1>
-    <p id="gateText">Sign in with your Freebuff account to open your record.</p>
-    <a class="btn primary" id="gateSignIn" href="/auth/freebuff/signin?returnTo=/">SIGN IN WITH FREEBUFF</a>
-    <form method="post" action="/auth/freebuff/signout">
-      <button class="btn ghost" type="submit">SIGN OUT</button>
+    <h1 id="authTitle">SYSTEM ACCESS</h1>
+    <p class="gate-lead">Sign in to carry your record to every device, or create an account in seconds.</p>
+
+    <div class="auth-tabs" role="tablist">
+      <button class="on" data-auth-tab="signin" role="tab" type="button">SIGN IN</button>
+      <button data-auth-tab="signup" role="tab" type="button">CREATE ACCOUNT</button>
+    </div>
+
+    <form data-auth-form="signin" class="auth-form">
+      <label class="field"><span class="lbl">EMAIL</span>
+        <input type="email" name="email" autocomplete="email" inputmode="email" required />
+      </label>
+      <label class="field"><span class="lbl">PASSWORD</span>
+        <input type="password" name="password" autocomplete="current-password" required />
+      </label>
+      <button class="btn primary block" type="submit">OPEN THE SYSTEM</button>
     </form>
+
+    <form data-auth-form="signup" class="auth-form" hidden>
+      <label class="field"><span class="lbl">HUNTER NAME</span>
+        <input type="text" name="name" maxlength="60" autocomplete="name" />
+      </label>
+      <label class="field"><span class="lbl">EMAIL</span>
+        <input type="email" name="email" autocomplete="email" inputmode="email" required />
+      </label>
+      <label class="field"><span class="lbl">PASSWORD (8+ CHARACTERS)</span>
+        <input type="password" name="password" minlength="8" autocomplete="new-password" required />
+      </label>
+      <button class="btn primary block" type="submit">CREATE ACCOUNT</button>
+    </form>
+
+    <p class="auth-busy" id="authBusy" hidden>CONTACTING THE SYSTEM…</p>
+    <p class="auth-error" id="authError" hidden></p>
+
+    <div class="auth-or"><span>OR</span></div>
+
+    <a class="btn block google-btn" id="authGoogle" href="/api/auth/google/start" hidden>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3Z" fill="#4285F4"/>
+        <path d="M12 22c2.7 0 4.9-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1a6 6 0 0 1-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22Z" fill="#34A853"/>
+        <path d="M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9l3.3-2.5Z" fill="#FBBC05"/>
+        <path d="M12 6c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.5l3.3 2.6A6 6 0 0 1 12 6Z" fill="#EA4335"/>
+      </svg>
+      CONTINUE WITH GOOGLE
+    </a>
+    <p class="auth-hint" id="authGoogleHint" hidden>Google sign-in switches on once GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set on the deployment.</p>
+
+    <button class="btn ghost block" data-act="auth-guest" type="button">USE WITHOUT AN ACCOUNT</button>
+    <p class="auth-foot">A guest record stays in this browser. An account keeps it on the server and on every device.</p>
   </div>
 </div>
 
@@ -106,6 +149,9 @@
 <script src="foods.js"></script>
 <script src="app.js"></script>
 <script src="nutrition.js"></script>
+<script src="push.js"></script>
+<script src="ai.js"></script>
+<script src="auth.js"></script>
 <script src="sync.js"></script>
 <script>
   if ('serviceWorker' in navigator) {

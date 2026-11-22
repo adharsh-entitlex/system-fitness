@@ -253,6 +253,8 @@ function renderNutrition() {
     </div>
     <div class="panel"><div class="food-grid">${suggestHtml}</div></div>
 
+    ${typeof aiPanelHtml === 'function' ? aiPanelHtml() : ''}
+
     <div class="section-head">
       <h2>TRAINER NOTES</h2>
       <div class="line"></div>

@@ -1,36 +1,36 @@
 'use strict';
 
 /* ======================================================================
-   Backend sync + account
+   Backend sync
    ----------------------------------------------------------------------
-   The server keeps the canonical record; localStorage stays the offline
-   cache, so the app keeps working with the server down or closed.
+   The server keeps the canonical record for the signed-in account;
+   localStorage stays the offline cache, so the app keeps working with the
+   server down or closed.
 
    Conflict rule: last write wins on meta.updatedAt. Anything newer than
    this tab — another tab, a device, the server — is adopted rather than
    overwritten, and the server answers a stale write with 409 + its copy.
 
-   Access: the record belongs to the first Freebuff account that signs in.
-   Every API call carries the session cookie; a 401 shows the sign-in gate
-   and a 403 from another account explains whose record this is.
+   Access: every API call carries the session cookie. A 401 reopens the
+   sign-in screen and the app continues from the local copy.
    ====================================================================== */
 
 const SYNC_API = '/api';
-const AUTH_SESSION = '/auth/freebuff/session';
 
-const sync = { online: null, busy: false, at: 0, error: '' };
-const account = { user: null, checked: false, denied: false, owner: '' };
+const sync = { online: null, busy: false, at: 0, error: '', suspend: false };
 let pushTimer = null;
 let adopting = false;
 
 /* ---------------- status ---------------- */
 
 function canSync() {
-  return !(account.checked && (!account.user || account.denied));
+  return !!(typeof auth !== 'undefined' && auth.user);
 }
 
 function syncView() {
-  if (!canSync()) return ['SIGN IN REQUIRED', 'is-error'];
+  if (typeof auth !== 'undefined' && auth.checked && !auth.user) {
+    return auth.guest ? ['LOCAL ONLY · GUEST', 'is-offline'] : ['SIGN IN REQUIRED', 'is-error'];
+  }
   if (sync.busy) return ['SYNCING…', ''];
   if (sync.online === false) return ['LOCAL ONLY', 'is-offline'];
   if (sync.error) return [`SYNC ERROR · ${sync.error}`, 'is-error'];
@@ -54,71 +54,20 @@ function paintSync() {
   if (line) line.textContent = text;
 }
 
-/* ---------------- account ---------------- */
+/* ---------------- transport ---------------- */
 
-function accountLabel() {
-  if (!account.checked) return 'Checking your Freebuff session…';
-  if (account.denied) return `This SYSTEM belongs to ${account.owner || 'another Freebuff account'}. Sign out and sign in with that account.`;
-  if (account.user) {
-    const who = account.user.email || account.user.name || 'your Freebuff account';
-    return `Signed in as ${who}. Only this account can read or write the record.`;
-  }
-  return 'Signed out. Sign in to sync this record across your devices.';
-}
-
-function renderGate() {
-  const gate = document.getElementById('authGate');
-  if (!gate) return;
-  const blocked = account.checked && (!account.user || account.denied);
-  gate.hidden = !blocked;
-  if (!blocked) return;
-
-  const text = document.getElementById('gateText');
-  const signIn = document.getElementById('gateSignIn');
-  if (account.denied) {
-    if (text) text.textContent = `This SYSTEM belongs to ${account.owner || 'another Freebuff account'}. Sign out and sign in with that account.`;
-    if (signIn) signIn.hidden = true;
-  } else {
-    if (text) text.textContent = 'Sign in with your Freebuff account to open your record. Everything you logged on this device is still here.';
-    if (signIn) signIn.hidden = false;
-  }
-  const line = document.getElementById('settingsAccount');
-  if (line) line.textContent = accountLabel();
-}
-
-function lockOut(denied, owner) {
-  account.user = null;
-  account.checked = true;
-  account.denied = denied;
-  if (owner) account.owner = owner;
-  renderGate();
+function onUnauthorized() {
+  if (typeof auth === 'undefined') return;
+  auth.user = null;
+  auth.checked = true;
+  if (typeof renderAuthScreen === 'function') renderAuthScreen();
   paintSync();
 }
-
-async function loadAccount() {
-  try {
-    const res = await fetch(AUTH_SESSION, { cache: 'no-store', headers: { Accept: 'application/json' } });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    account.user = (data && data.user) || null;
-    account.checked = true;
-    account.denied = false;
-    renderGate();
-    paintSync();
-    return account.user;
-  } catch {
-    // Offline: keep working from the local cache with whatever we knew.
-    return null;
-  }
-}
-
-/* ---------------- transport ---------------- */
 
 async function api(path, init) {
   const res = await fetch(SYNC_API + path, { cache: 'no-store', ...init });
   const body = await res.json().catch(() => null);
-  if (res.status === 401) lockOut(false);
-  else if (res.status === 403 && body && body.error === 'owner only') lockOut(true, body.owner);
+  if (res.status === 401) onUnauthorized();
   return { ok: res.ok, status: res.status, body };
 }
 
@@ -158,7 +107,7 @@ function adopt(data) {
 
 async function push(silent) {
   clearTimeout(pushTimer);
-  if (!canSync()) return;
+  if (!canSync() || sync.suspend) return;
   if (sync.online === false) {
     if (!silent) toast('No server reachable — changes stay in this browser.', 'danger');
     return;
@@ -176,8 +125,8 @@ async function push(silent) {
     if (res.status === 409) {
       adopt(res.body);
       toast('The server held a newer record — this browser took that copy.', 'gold');
-    } else if (res.status === 401 || res.status === 403) {
-      if (!silent) toast('Sign in as the owner account to save to the server.', 'danger');
+    } else if (res.status === 401) {
+      if (!silent) toast('Sign in again to save to the server.', 'danger');
     } else if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     } else {
@@ -197,7 +146,7 @@ async function push(silent) {
 
 async function pull() {
   if (!canSync()) {
-    toast('Sign in with your Freebuff account first.', 'danger');
+    toast('Sign in first, then the server copy can be pulled.', 'danger');
     return;
   }
   if (sync.online === false) {
@@ -211,7 +160,7 @@ async function pull() {
     if (res.status === 404) {
       toast('The server has no saved record yet.', 'danger');
     } else if (!res.ok) {
-      if (res.status !== 401 && res.status !== 403) throw new Error(`HTTP ${res.status}`);
+      if (res.status !== 401) throw new Error(`HTTP ${res.status}`);
     } else if (adopt(res.body)) {
       toast('Record pulled from the server.', 'gold');
     }
@@ -224,7 +173,7 @@ async function pull() {
 
 /* Called by save(): rapid taps become one request. */
 function schedulePush() {
-  if (adopting || !canSync()) return;
+  if (adopting || sync.suspend || !canSync()) return;
   clearTimeout(pushTimer);
   if (sync.online === false) return;
   pushTimer = setTimeout(() => push(true), 900);
@@ -232,24 +181,20 @@ function schedulePush() {
 
 /* ---------------- boot & recovery ---------------- */
 
-async function initSync() {
-  paintSync();
-  await loadAccount();
-  if (!canSync()) {
-    paintSync();
-    return;
-  }
-  if (!(await probe())) return;
-
+/* The server copy is the truth for a signed-in account; a local copy only
+   wins when it is genuinely newer (work done offline). */
+async function loadFromServer(silent) {
   try {
     const res = await api('/state');
     const localAt = Number((state.meta || {}).updatedAt) || 0;
-    const remoteAt = res.body ? Number(res.body.updatedAt) || 0 : 0;
+    const remoteAt = res.ok && res.body ? Number(res.body.updatedAt) || 0 : 0;
 
-    if (res.ok && remoteAt > localAt) {
+    if (res.ok && remoteAt >= localAt && remoteAt > 0) {
       adopt(res.body);
-      toast('Loaded your record from the server.', 'gold');
-    } else if (res.ok || res.status === 404) {
+      if (!silent) toast('Your record is synced from the server.', 'gold');
+    } else if (res.ok && remoteAt < localAt) {
+      push(true);
+    } else if (res.status === 404) {
       push(true);
     }
   } catch (err) {
@@ -258,10 +203,37 @@ async function initSync() {
   }
 }
 
+async function initSync() {
+  paintSync();
+  await bootAuth();
+  paintSync();
+  if (!canSync()) return;
+  if (!(await probe())) return;
+  await loadFromServer(true);
+  if (typeof loadPushConfig === 'function') {
+    await loadPushConfig();
+    pushTick(false);
+  }
+}
+
+/* Sign-in, sign-up, sign-out and guest mode all land here. */
+async function afterAuthChange() {
+  sync.online = null;
+  sync.error = '';
+  paintSync();
+  if (!canSync()) return;
+  if (!(await probe())) return;
+  await loadFromServer(false);
+  if (typeof loadPushConfig === 'function') {
+    await loadPushConfig();
+    pushTick(true);
+  }
+}
+
 // Reconnect after the server or the network came back.
 async function retrySync() {
   if (sync.busy || !canSync()) return;
-  if (!account.checked) await loadAccount();
+  if (!auth.checked) await bootAuth();
   if (sync.online === true && !sync.error) return;
   if (await probe()) push(true);
 }

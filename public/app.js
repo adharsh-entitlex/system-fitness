@@ -65,6 +65,7 @@ function defaultState() {
     meals: {},
     pantry: DEFAULT_PANTRY.slice(),
     nutrition: { kcal: 2200, protein: 140 },
+    ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', busy: false, remaining: null },
     reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 },
     meta: { updatedAt: 0 }
   };
@@ -92,6 +93,7 @@ function normalizeState(parsed) {
     meals: src.meals || {},
     pantry: Array.isArray(src.pantry) ? src.pantry.filter((item) => typeof item === 'string') : DEFAULT_PANTRY.slice(),
     nutrition: { ...base.nutrition, ...(src.nutrition || {}) },
+    ai: { ...base.ai, ...(src.ai || {}), busy: false, results: Array.isArray((src.ai || {}).results) ? src.ai.results : [] },
     meta: { ...base.meta, ...(src.meta || {}) }
   };
 }
@@ -319,6 +321,8 @@ function pushNotification(title, body) {
 function checkWaterReminder() {
   const r = state.reminders;
   if (!r.enabled) return;
+  // With device push on, the server owns reminders; skip the in-tab duplicate.
+  if (typeof PUSH_STATE !== 'undefined' && PUSH_STATE.subscribed) return;
   const now = new Date();
   const hour = now.getHours();
   if (hour < 8 || hour >= 22) return;
@@ -1018,18 +1022,33 @@ function openSettings() {
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">ACCOUNT</h2><div class="line"></div></div>
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
-        <span id="settingsAccount">${typeof accountLabel === 'function' ? esc(accountLabel()) : 'Sign in with Freebuff to sync.'}</span>
+        <span id="settingsAccount">${esc(typeof authAccountLabel === 'function' ? authAccountLabel() : 'Not signed in.')}</span>
       </p>
-      <form method="post" action="/auth/freebuff/signout" class="modal-actions" style="margin-top:0;justify-content:flex-start">
-        <button class="btn ghost" type="submit">SIGN OUT</button>
-      </form>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        ${typeof auth !== 'undefined' && auth.user
+          ? '<button class="btn ghost" data-act="auth-signout">SIGN OUT</button>'
+          : '<button class="btn" data-act="auth-open">SIGN IN OR CREATE ACCOUNT</button>'}
+      </div>
+
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">DEVICE NOTIFICATIONS</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        <span id="settingsPush">${esc(typeof pushStatusText === 'function' ? pushStatusText() : 'Off.')}</span>
+      </p>
+      <p class="panel-sub" style="margin:6px 0 0;font-size:12px">
+        Device notifications are delivered by the server, so they arrive even when this app is closed.
+      </p>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn" data-act="push-enable">ENABLE ON THIS DEVICE</button>
+        <button class="btn ghost" data-act="push-test">SEND TEST</button>
+        <button class="btn ghost" data-act="push-disable">TURN OFF</button>
+      </div>
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">SERVER SYNC</h2><div class="line"></div></div>
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
         <span id="settingsSync">${typeof syncStatusText === 'function' ? syncStatusText() : 'LOCAL ONLY'}</span>.
         Every change is pushed to the server automatically, and the newest copy wins on any device.
-        PULL NOW replaces this browser's copy with the server's. The server only answers your signed-in
-        Freebuff account.
+        PULL NOW replaces this browser's copy with the server's. The server only ever answers the
+        account you are signed in with.
       </p>
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="sync-push">PUSH NOW</button>
