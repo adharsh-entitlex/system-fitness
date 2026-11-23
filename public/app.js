@@ -1595,12 +1595,18 @@ function startTour() {
 function maybeStartTour() {
   if (tourActive) return;
   if (state.meta && state.meta.tourDone) return;
+  // Access has to be settled first: while the session check is in flight the
+  // gate is still hidden, and the tour would open underneath it.
+  if (typeof auth !== 'undefined' && !auth.checked) return;
+  if (typeof auth !== 'undefined' && !auth.user && !auth.guest) return;
   const gate = $('#authScreen');
   if (gate && !gate.hidden) return;
   const modal = $('#modalRoot');
   if (modal && !modal.hidden) return;
   setTimeout(() => {
     if (tourActive) return;
+    const gateNow = $('#authScreen');
+    if (gateNow && !gateNow.hidden) return;
     const stillModal = $('#modalRoot');
     if (stillModal && !stillModal.hidden) return;
     startTour();
