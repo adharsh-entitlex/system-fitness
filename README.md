@@ -206,13 +206,19 @@ Then set `TWA_FINGERPRINT` (Sites → Secrets) to the printed SHA-256 so `/.well
 ### Install on a phone
 
 The app opens `https://system-fitness.adharsh-bb1.workers.dev` (the owner's own
-Cloudflare Worker). The current release is **1.6.0** (`appVersionCode` 3), signed
-with the throwaway key of its CI run — read the SHA-256 from that run's log or
-summary and put it in `TWA_FINGERPRINT` for the Worker (and for the Sites
-project, if that deployment should host the app too).
-`/.well-known/assetlinks.json` then verifies the signature and the app opens
-fullscreen, with no address bar. `TWA_FINGERPRINT` accepts a comma-separated
-list, so several signatures can be valid at once.
+Cloudflare Worker). The current release is **1.6.0** (`appVersionCode` 3), built
+by run #8 and signed with that run's throwaway key:
+
+```
+E0:C4:A5:2C:7F:5A:BD:4D:56:3F:8B:CC:B9:79:48:28
+A1:3E:55:8A:66:12:6F:11:40:07:FF:D2:21:FC:C6:EA
+```
+
+That digest is in the Worker's `TWA_FINGERPRINT`, so `/.well-known/assetlinks.json`
+verifies the APK and it opens fullscreen, with no address bar. `TWA_FINGERPRINT`
+accepts a comma-separated list, so several signatures can be valid at once.
+The file itself is `artifacts/THE-SYSTEM-1.6.0.apk`
+(sha256 `719b44f0c3aee06fe08e1d9bd76dbe26030fa16066cabb8011ef146d0642840a`).
 
 Since these builds use a throwaway key, the signature changes with every run:
 uninstall the old app before installing a new one, and update the fingerprint.
