@@ -1463,3 +1463,29 @@ body.is-locked .install-bar { display: none; }
 .share-panel { margin-top: 14px; padding-top: 22px; }
 .share-panel .modal-actions { margin-top: 12px; }
 .share-panel .modal-actions .btn { flex: 0 1 auto; }
+
+/* ---------------- training engine ---------------- */
+
+.ex-badge{display:block;font-size:10.5px;letter-spacing:.05em;color:#7f9bbd;margin-top:4px;line-height:1.4}
+.ex-badge b{color:#5fe6ff}
+.set-list{list-style:none;display:grid;gap:6px;margin:12px 0;padding:0}
+.set-row{display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(95,230,255,.06);border:1px solid rgba(95,230,255,.14)}
+.set-no{font-size:9px;letter-spacing:.14em;color:#7f9bbd;min-width:52px}
+.set-val{flex:1;font-variant-numeric:tabular-nums}
+.live-card{margin-top:16px;border-color:rgba(95,230,255,.26)}
+.live-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.live-count{font-size:10px;letter-spacing:.16em;color:#7f9bbd}
+.live-rest{font-size:11px;letter-spacing:.14em;color:#5fe6ff;padding:4px 9px;border:1px solid rgba(95,230,255,.3)}
+.live-rest.is-resting{background:rgba(95,230,255,.12)}
+.live-sets{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0}
+.live-set{font-size:10.5px;letter-spacing:.08em;padding:6px 10px;border:1px dashed rgba(95,230,255,.3);color:#7f9bbd;font-variant-numeric:tabular-nums}
+.live-set.is-done{border-style:solid;border-color:rgba(80,230,160,.55);color:#dff2ff;background:rgba(80,230,160,.1)}
+.live-row{display:flex;gap:10px;align-items:flex-end;margin-top:4px}
+.live-row .btn{flex:1}
+.live-rest-pick{width:98px}
+.form-grid.three{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
+.measure-delta{font-size:10px;color:#5fe6ff;letter-spacing:.08em;margin-top:3px}
+.session-foot{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.session-del{padding:4px 10px;font-size:9px}
+.custom-session{display:grid;gap:12px;margin-top:4px}
+.custom-session textarea{width:100%;background:rgba(5,12,24,.6);border:1px solid rgba(95,165,255,.25);color:#dff2ff;font:inherit;padding:10px;resize:vertical}

@@ -68,6 +68,7 @@ function aiPanelHtml() {
       </div>
       ${ai.error ? `<p class="ai-error">${esc(ai.error)}</p>` : ''}
       ${ai.error && ai.detail ? `<p class="ai-detail">${esc(ai.detail)}</p>` : ''}
+      ${ai.error && (ai.results || []).length ? '<p class="ai-detail">The plan you generated earlier is still below and still valid — the pantry suggestions above work without the server.</p>' : ''}
     </div>
     ${cards ? `<div class="panel"><div class="food-grid">${cards}</div></div>` : ''}
   `;

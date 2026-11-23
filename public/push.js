@@ -74,7 +74,8 @@ async function postPrefs() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         enabled: !!(PUSH_STATE.subscribed && state.reminders.enabled),
-        everyMin: state.reminders.everyMin
+        everyMin: state.reminders.everyMin,
+        hour: state.reminders.hour == null ? 20 : state.reminders.hour
       })
     });
   } catch {

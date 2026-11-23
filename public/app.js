@@ -66,15 +66,20 @@ function defaultState() {
     waterBonus: {},
     meals: {},
     pantry: DEFAULT_PANTRY.slice(),
-    nutrition: { kcal: 2200, protein: 140 },
+    nutrition: { kcal: 2200, protein: 140, manual: false },
+    measures: {},
     ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', detail: '', busy: false, remaining: null },
-    reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 },
+    reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0, hour: 20 },
     // Milestone ids already unlocked, and the daily directives already claimed.
     achievements: { unlocked: {} },
     bonus: { claimed: {} },
     // startedAt is the day this record began: days before it are never counted
     // as missed workouts. tourDone remembers the first-run walkthrough.
-    meta: { updatedAt: 0, startedAt: '', tourDone: false, shared: false }
+    meta: {
+      updatedAt: 0, startedAt: '', tourDone: false, shared: false,
+      program: { equipment: 'gym', experience: 'beginner', days: 3 },
+      programReady: false, calibratedAt: '', calibratedKg: 0, restSec: 90
+    }
   };
 }
 
@@ -93,6 +98,7 @@ function normalizeState(parsed) {
     goals: { ...base.goals, ...(src.goals || {}) },
     profile: { ...base.profile, ...(src.profile || {}) },
     weights: src.weights && typeof src.weights === 'object' ? src.weights : {},
+    measures: src.measures && typeof src.measures === 'object' ? src.measures : {},
     reminders: { ...base.reminders, ...(src.reminders || {}) },
     schedule: { ...base.schedule, ...(src.schedule || {}) },
     templates: Array.isArray(src.templates) && src.templates.length ? src.templates : base.templates,
@@ -460,7 +466,9 @@ function logWeight() {
   const kg = Math.round(raw * 10) / 10;
   recordWeight(kg);
   state.profile = { ...profileOf(), weightKg: kg };
-  applyProfileTargets();
+  // A hunter who typed their own targets keeps them; the calibration card in
+  // Progress is the explicit way back to body-derived numbers.
+  if (!state.nutrition.manual) applyProfileTargets();
   save();
   renderAll();
   const bmi = bmiOf(state.profile);
@@ -491,6 +499,28 @@ function profileFieldsHtml() {
       <label class="field"><span class="lbl">GOAL</span>
         <select data-profile="goal">${options}</select>
       </label>
+      <div class="form-grid three">
+        <label class="field"><span class="lbl">EXPERIENCE</span>
+          <select data-profile="experience">
+            <option value="beginner"${programPref().experience === 'beginner' ? ' selected' : ''}>BEGINNER</option>
+            <option value="intermediate"${programPref().experience === 'intermediate' ? ' selected' : ''}>INTERMEDIATE</option>
+            <option value="advanced"${programPref().experience === 'advanced' ? ' selected' : ''}>ADVANCED</option>
+          </select>
+        </label>
+        <label class="field"><span class="lbl">EQUIPMENT</span>
+          <select data-profile="equipment">
+            <option value="gym"${programPref().equipment === 'gym' ? ' selected' : ''}>FULL GYM</option>
+            <option value="home"${programPref().equipment === 'home' ? ' selected' : ''}>DUMBBELLS</option>
+            <option value="bodyweight"${programPref().equipment === 'bodyweight' ? ' selected' : ''}>BODYWEIGHT</option>
+          </select>
+        </label>
+        <label class="field"><span class="lbl">DAYS / WEEK</span>
+          <select data-profile="days">
+            ${[2, 3, 4, 5, 6].map((n) => `<option value="${n}"${programPref().days === n ? ' selected' : ''}>${n}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <p class="panel-sub" style="margin:2px 0 0;font-size:12.5px">These three forge the starting split. Change them any time in Progress → REBUILD PROGRAM.</p>
       <p class="panel-sub" id="bmiPreview" style="margin:2px 0 0;font-size:12.5px">${bmiLine(p)}</p>`;
 }
 
@@ -506,6 +536,25 @@ function openProfileSetup() {
       <button class="btn ghost" data-act="profile-later">LATER</button>
     </div>
   `);
+}
+
+/* Read by the profile form; the training engine fills the defaults and the
+   actual program. Guarded so app.js still works on its own. */
+function programPref() {
+  const program = (state.meta && state.meta.program) || {};
+  return {
+    experience: program.experience || 'beginner',
+    equipment: program.equipment || 'gym',
+    days: Number(program.days) || 3
+  };
+}
+
+function readProgramPref() {
+  return {
+    experience: $('[data-profile="experience"]')?.value || programPref().experience,
+    equipment: $('[data-profile="equipment"]')?.value || programPref().equipment,
+    days: clampNum($('[data-profile="days"]')?.value, 2, 6, programPref().days)
+  };
 }
 
 let profilePrompted = false;
@@ -534,6 +583,8 @@ function saveProfile() {
   state.profile = profile;
   recordWeight(profile.weightKg);
   applyProfileTargets();
+  state.meta = { ...(state.meta || {}), program: readProgramPref() };
+  if (typeof maybeGenerateProgram === 'function') maybeGenerateProgram();
   save();
   closeModal();
   renderAll();
@@ -673,8 +724,12 @@ function renderToday() {
       <div class="ex-body">
         <span class="ex-name">${esc(ex.name)}</span>
         <span class="ex-meta">${ex.sets} × ${ex.reps}${ex.weight ? ` · ${ex.weight} kg` : ''}</span>
+        ${typeof setBadgeHtml === 'function' ? setBadgeHtml(key, ex) : ''}
       </div>
       <div class="ex-actions">
+        <button class="icon-btn sm" data-act="sets-open" data-key="${key}" data-i="${i}" aria-label="Log sets for ${esc(ex.name)}">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M5 12h14M5 7h14M5 17h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
         <button class="icon-btn sm" data-act="edit-ex" data-key="${key}" data-i="${i}" aria-label="Edit exercise">
           <svg viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10-4-4L4 16v4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 6l4 4" stroke="currentColor" stroke-width="1.5"/></svg>
         </button>
@@ -1548,9 +1603,12 @@ function openSettings() {
           <input type="number" min="40" max="400" step="5" data-set="protein" value="${state.nutrition.protein}" />
         </label>
       </div>
-      <div class="form-grid two">
+      <div class="form-grid three">
         <label class="field"><span class="lbl">REMINDER INTERVAL (MIN)</span>
           <input type="number" min="15" max="360" step="15" data-set="every" value="${every}" />
+        </label>
+        <label class="field"><span class="lbl">STREAK CHECK-IN (HOUR)</span>
+          <input type="number" min="0" max="23" data-set="streakHour" value="${state.reminders.hour == null ? 20 : state.reminders.hour}" />
         </label>
         <div class="field"><span class="lbl">BROWSER NOTIFICATIONS</span>
           <button class="btn block" data-act="notify-perm">${permLabel}</button>
@@ -1584,6 +1642,7 @@ function openSettings() {
         ${account
           ? '<button class="btn ghost" data-act="auth-signout">SIGN OUT</button>'
           : '<button class="btn" data-act="auth-open">SIGN IN OR CREATE ACCOUNT</button>'}
+        ${account ? '<button class="btn danger" data-act="delete-account">DELETE ACCOUNT</button>' : ''}
       </div>
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">GOOGLE ACCOUNT</h2><div class="line"></div></div>
@@ -1671,12 +1730,17 @@ function saveSettings() {
   }
   if (Number.isFinite(typed.kcal) && typed.kcal !== before.kcal) {
     state.nutrition.kcal = clampNum(typed.kcal, 1000, 6000, state.nutrition.kcal);
+    state.nutrition.manual = true;
   }
   if (Number.isFinite(typed.protein) && typed.protein !== before.protein) {
     state.nutrition.protein = clampNum(typed.protein, 40, 400, state.nutrition.protein);
+    state.nutrition.manual = true;
   }
   state.goals.weekly = clampNum($('[data-set="weekly"]')?.value, 1, 14, 4);
   state.reminders.everyMin = clampNum($('[data-set="every"]')?.value, 15, 360, 90);
+  state.reminders.hour = clampNum($('[data-set="streakHour"]')?.value, 0, 23, state.reminders.hour || 20);
+  state.meta = { ...(state.meta || {}), program: readProgramPref() };
+  if (typeof maybeGenerateProgram === 'function') maybeGenerateProgram();
   save();
   closeModal();
   renderAll();

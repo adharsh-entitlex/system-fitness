@@ -482,6 +482,7 @@ async function handlePush(req, res, user, pathname) {
     db.pushPrefs[user.id] = {
       enabled: !!body.enabled,
       everyMin: Math.min(360, Math.max(15, Number(body.everyMin) || 90)),
+      hour: Math.min(23, Math.max(0, Number(body.hour == null ? 20 : body.hour))),
       lastSentAt: Date.now()
     };
     queueWrite();
@@ -551,6 +552,22 @@ const server = createServer(async (req, res) => {
       const user = currentUser(req);
       if (!user) return sendJson(res, 401, { error: 'sign in required' });
       if (pathname === '/api/state') return await handleState(req, res, user);
+      if (pathname === '/api/account/delete') {
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
+        const body = await jsonBody(req);
+        if (String(body.confirm || '').toUpperCase() !== 'DELETE') return sendJson(res, 400, { error: 'Type DELETE to confirm.' });
+        db.users = db.users.filter((u) => u.id !== user.id);
+        delete db.records[user.id];
+        delete db.pushPrefs[user.id];
+        delete db.aiUsage[user.id];
+        db.pushSubs = db.pushSubs.filter((sub) => sub.userId !== user.id);
+        Object.keys(db.sessions).forEach((token) => {
+          if (db.sessions[token] && db.sessions[token].userId === user.id) delete db.sessions[token];
+        });
+        queueWrite();
+        res.setHeader('Set-Cookie', 'sys_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+        return sendJson(res, 200, { ok: true });
+      }
       if (pathname === '/api/ai/suggest') {
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
         return await handleAi(req, res, user);

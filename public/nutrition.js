@@ -80,7 +80,7 @@ function renderHistory() {
   const sessions = filtered.map(([k, l]) => {
     const d = parseKey(k);
     const tpl = state.templates.find((t) => t.id === l.templateId);
-    const name = tpl ? tpl.name : 'AD-HOC SESSION';
+    const name = tpl ? tpl.name : (l.name || 'AD-HOC SESSION');
     const tag = l.status === 'completed' ? 'cleared' : l.status === 'skipped' ? 'skipped' : 'pending';
     const tagClass = tag === 'cleared' ? 'done' : tag === 'skipped' ? 'skip' : '';
     const load = (l.exercises || []).reduce((a, e) => a + (Number(e.sets) || 0) * (Number(e.reps) || 0) * (Number(e.weight) || 0), 0);
@@ -88,7 +88,7 @@ function renderHistory() {
       <li class="ex ${e.done ? 'is-done' : ''}">
         <div class="ex-body">
           <span class="ex-name">${esc(e.name)}</span>
-          <span class="ex-meta">${e.sets} × ${e.reps}${Number(e.weight) > 0 ? ` · ${e.weight} kg` : ' · bodyweight'}</span>
+          <span class="ex-meta">${e.sets} × ${e.reps}${Number(e.weight) > 0 ? ` · ${e.weight} kg` : ' · bodyweight'}${Array.isArray(e.log) && e.log.length ? ` · ${e.log.length} logged` : ''}</span>
         </div>
         <button class="icon-btn sm" data-act="edit-ex" data-key="${k}" data-i="${i}" aria-label="Edit ${esc(e.name)}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10-4-4L4 16v4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 6l4 4" stroke="currentColor" stroke-width="1.5"/></svg>
@@ -108,7 +108,10 @@ function renderHistory() {
         <ul class="ex-list compact">
           ${rows || '<li class="ex"><div class="ex-body"><span class="ex-meta">No exercises recorded for this day.</span></div></li>'}
         </ul>
-        <div class="session-foot">LOAD ${Math.round(load).toLocaleString()} KG · ${(l.exercises || []).length} MOVES</div>
+        <div class="session-foot">
+          <span>LOAD ${Math.round(load).toLocaleString()} KG · ${(l.exercises || []).length} MOVES</span>
+          <button class="btn ghost session-del" data-act="session-del" data-key="${k}" aria-label="Remove this session">REMOVE</button>
+        </div>
       </article>`;
   }).join('');
 
@@ -148,19 +151,9 @@ function renderHistory() {
    today, using a workout from the library. It is a normal completed log, so
    the streak, quest map, achievements and history all treat it the same. */
 function openSessionLogger() {
-  if (!state.templates.length) {
-    openModal(`
-      <h2>LOG A SESSION</h2>
-      <div class="sub">Forge a workout in the library first, then log the sessions you trained with it.</div>
-      <div class="modal-actions">
-        <button class="btn primary" data-act="modal-close">GOT IT</button>
-      </div>
-    `);
-    return;
-  }
-
   const options = state.templates
     .map((t) => `<option value="${t.id}">${esc(t.name)}</option>`)
+    .concat('<option value="__custom">ONE-OFF SESSION…</option>')
     .join('');
 
   openModal(`
@@ -175,6 +168,14 @@ function openSessionLogger() {
       </label>
       <label class="field" style="grid-column:1/-1"><span class="lbl">NOTE (OPTIONAL)</span>
         <input type="text" data-session="note" maxlength="120" placeholder="e.g. evening session, felt strong" />
+      </label>
+    </div>
+    <div class="custom-session" data-custom-session hidden>
+      <label class="field"><span class="lbl">WORKOUT NAME</span>
+        <input type="text" data-session="custom-name" maxlength="60" placeholder="e.g. Hotel gym, evening run" />
+      </label>
+      <label class="field"><span class="lbl">EXERCISES — ONE PER LINE: NAME, SETS, REPS, KG</span>
+        <textarea data-session="custom-ex" rows="4" placeholder="Bench Press, 3, 8, 60&#10;Push-up, 3, 15"></textarea>
       </label>
     </div>
     <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
@@ -193,8 +194,9 @@ function saveSessionFromHistory() {
   if (raw > todayKey()) { toast('You cannot log a session in the future.', 'danger'); return; }
 
   const tplId = $('[data-session="template"]')?.value || '';
-  const tpl = state.templates.find((t) => t.id === tplId) || null;
-  if (!tpl) { toast('Pick a workout to log.', 'danger'); return; }
+  const custom = tplId === '__custom';
+  const tpl = custom ? null : state.templates.find((t) => t.id === tplId) || null;
+  if (!custom && !tpl) { toast('Pick a workout to log.', 'danger'); return; }
 
   const existing = state.logs[raw];
   if (existing && existing.status === 'completed') {
@@ -204,8 +206,20 @@ function saveSessionFromHistory() {
 
   const note = ($('[data-session="note"]')?.value || '').trim().slice(0, 120);
   const log = existing || { status: 'pending', templateId: null, exercises: [], xpAwarded: false };
-  log.templateId = tpl.id;
-  log.exercises = tpl.exercises.map((e) => ({ ...e, done: true }));
+  let title = '';
+  if (custom) {
+    title = ($('[data-session="custom-name"]')?.value || '').trim().slice(0, 60) || 'ONE-OFF SESSION';
+    const exercises = parseCustomExercises($('[data-session="custom-ex"]')?.value);
+    if (!exercises.length) { toast('Add at least one exercise for a one-off session.', 'danger'); return; }
+    log.templateId = null;
+    log.name = title;
+    log.exercises = exercises;
+  } else {
+    title = tpl.name;
+    delete log.name;
+    log.templateId = tpl.id;
+    log.exercises = tpl.exercises.map((e) => ({ ...e, done: true }));
+  }
   log.status = 'completed';
   if (note) log.note = note;
   if (!log.xpAwarded) {
@@ -222,7 +236,27 @@ function saveSessionFromHistory() {
   save();
   closeModal();
   renderAll();
-  toast(`${tpl.name} logged for ${shortDate(parseKey(raw))}.`, 'gold');
+  toast(`${title} logged for ${shortDate(parseKey(raw))}.`, 'gold');
+}
+
+/* One exercise per line: "Bench Press, 3, 8, 60". Sets, reps and weight are
+   optional, so "Evening run" on its own is a valid session too. */
+function parseCustomExercises(raw) {
+  const lines = String(raw || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+  return lines.map((line) => {
+    const parts = line.split(',').map((part) => part.trim());
+    return {
+      name: (parts[0] || 'Exercise').slice(0, 60),
+      sets: clampNum(parts[1], 1, 999, 3),
+      reps: clampNum(parts[2], 1, 999, 10),
+      weight: clampNum(parts[3], 0, 500, 0),
+      done: true
+    };
+  });
 }
 
 /* ---------------- nutrition ---------------- */
@@ -622,6 +656,12 @@ document.addEventListener('click', (e) => {
       renderAll();
     }
   }
+});
+
+document.addEventListener('change', (e) => {
+  if (!e.target.matches || !e.target.matches('[data-session="template"]')) return;
+  const box = document.querySelector('[data-custom-session]');
+  if (box) box.hidden = e.target.value !== '__custom';
 });
 
 document.addEventListener('submit', (e) => {

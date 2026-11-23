@@ -103,6 +103,13 @@ const SCHEMA = [
    )`
 ];
 
+/* Columns added after the first release. D1 has no ADD COLUMN IF NOT EXISTS,
+   so a duplicate is expected on an up-to-date database and is ignored. */
+const MIGRATIONS = [
+  ['push_prefs', 'reminder_hour', 'INTEGER DEFAULT 20'],
+  ['push_prefs', 'last_streak_at', 'INTEGER DEFAULT 0']
+];
+
 let schemaReady = false;
 
 function json(payload, status = 200, extraHeaders = {}) {
@@ -120,6 +127,13 @@ function redirect(location, extraHeaders = {}) {
 async function ensureSchema(db) {
   if (schemaReady) return;
   for (const statement of SCHEMA) await db.prepare(statement).run();
+  for (const [table, column, type] of MIGRATIONS) {
+    try {
+      await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
+    } catch {
+      /* the column already exists */
+    }
+  }
   schemaReady = true;
 }
 
@@ -468,6 +482,95 @@ async function handleAiSuggest(request, env, user) {
   });
 }
 
+/* ---------------- streak check-in ----------------
+   The most valuable notification in a streak app is not the water nudge: it
+   is the one that says tonight's quest is the only thing standing between a
+   run of days and zero. */
+
+function localParts(offsetMin, now) {
+  const local = new Date(now + offsetMin * 60000);
+  return { key: local.toISOString().slice(0, 10), hour: local.getUTCHours(), dow: local.getUTCDay() };
+}
+
+function streakIn(saved, offsetMin, now) {
+  const logs = (saved && saved.logs) || {};
+  const schedule = (saved && saved.schedule) || {};
+  let count = 0;
+  for (let i = 0; i < 120; i++) {
+    const local = new Date(now + offsetMin * 60000 - i * 86400000);
+    const key = local.toISOString().slice(0, 10);
+    const log = logs[key];
+    if (log && log.status === 'completed') { count++; continue; }
+    if (i === 0) continue; // today never breaks the streak
+    if (!schedule[local.getUTCDay()]) continue; // rest day, neutral
+    break;
+  }
+  return count;
+}
+
+/* One nudge per evening, only when a workout was scheduled and is still open.
+   The record is read right here so the message can name the real streak. */
+async function streakPass(env, now) {
+  const rows = await env.DB.prepare(
+    `SELECT p.user_id, p.tz_offset, p.reminder_hour, p.last_streak_at, r.state
+       FROM push_prefs p
+       JOIN records r ON r.user_id = p.user_id
+      WHERE p.enabled = 1`
+  ).all();
+
+  for (const row of rows.results || []) {
+    try {
+      const offset = Number(row.tz_offset || 0);
+      const { key, hour, dow } = localParts(offset, now);
+      const target = row.reminder_hour == null ? 20 : Number(row.reminder_hour);
+      if (hour < target || hour >= 23) continue;
+      // 20 hours apart, so a 15-minute cron cannot spam one evening.
+      if (now - Number(row.last_streak_at || 0) < 20 * 3600 * 1000) continue;
+
+      let saved = {};
+      try { saved = JSON.parse(row.state || '{}'); } catch { saved = {}; }
+      const log = ((saved && saved.logs) || {})[key];
+      if (log && log.status === 'completed') continue;
+      if (!((saved && saved.schedule) || {})[dow]) continue;
+
+      const streak = streakIn(saved, offset, now);
+      const result = await pushUser(env, row.user_id, {
+        title: 'STREAK AT RISK',
+        body: streak > 0
+          ? `${streak}-day streak ends tonight unless today's quest is cleared.`
+          : "Today's quest is still open. Clear it before the day resets.",
+        tag: 'system-streak',
+        url: '/'
+      });
+      if (result.sent > 0) {
+        await env.DB.prepare('UPDATE push_prefs SET last_streak_at = ? WHERE user_id = ?')
+          .bind(now, row.user_id)
+          .run();
+      }
+    } catch (err) {
+      console.error('[system] streak check-in failed:', err);
+    }
+  }
+}
+
+/* ---------------- account removal ---------------- */
+
+async function handleDeleteAccount(request, env, user) {
+  const { body, error, status } = await readBody(request);
+  if (error) return json({ error }, status);
+  if (String((body && body.confirm) || '').toUpperCase() !== 'DELETE') {
+    return json({ error: 'Type DELETE to confirm.' }, 400);
+  }
+  const db = env.DB;
+  await db.prepare('DELETE FROM push_subs WHERE user_id = ?').bind(user.id).run();
+  await db.prepare('DELETE FROM push_prefs WHERE user_id = ?').bind(user.id).run();
+  await db.prepare('DELETE FROM ai_usage WHERE user_id = ?').bind(user.id).run();
+  await db.prepare('DELETE FROM records WHERE user_id = ?').bind(user.id).run();
+  await db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id).run();
+  await db.prepare('DELETE FROM users WHERE id = ?').bind(user.id).run();
+  return json({ ok: true }, 200, { 'Set-Cookie': clearCookie(env, 'sys_session') });
+}
+
 /* ---------------- push ---------------- */
 
 async function handlePush(request, env, user, pathname) {
@@ -554,14 +657,15 @@ async function handlePush(request, env, user, pathname) {
     const { body } = await readBody(request);
     const enabled = body && body.enabled ? 1 : 0;
     const everyMin = Math.min(360, Math.max(15, Number(body && body.everyMin) || 90));
+    const reminderHour = Math.min(23, Math.max(0, Number(body && body.hour == null ? 20 : body.hour)));
     const tzOffset = -new Date().getTimezoneOffset();
     await env.DB.prepare(
-      `INSERT INTO push_prefs (user_id, enabled, every_min, tz_offset, last_sent_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET enabled = excluded.enabled, every_min = excluded.every_min, tz_offset = excluded.tz_offset`
+      `INSERT INTO push_prefs (user_id, enabled, every_min, tz_offset, reminder_hour, last_sent_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET enabled = excluded.enabled, every_min = excluded.every_min, tz_offset = excluded.tz_offset, reminder_hour = excluded.reminder_hour`
     )
-      .bind(user.id, enabled, everyMin, tzOffset, Date.now())
+      .bind(user.id, enabled, everyMin, tzOffset, reminderHour, Date.now())
       .run();
-    return json({ ok: true, enabled: !!enabled, everyMin });
+    return json({ ok: true, enabled: !!enabled, everyMin, reminderHour });
   }
 
   return json({ error: 'unknown endpoint' }, 404);
@@ -635,6 +739,10 @@ async function handle(request, env) {
     }
 
     if (pathname === '/api/state') return handleState(request, env, user);
+    if (pathname === '/api/account/delete') {
+      if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+      return handleDeleteAccount(request, env, user);
+    }
     if (pathname === '/api/ai/suggest') {
       if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
       return handleAiSuggest(request, env, user);
@@ -685,6 +793,7 @@ export default {
           .bind(now, prefs.user_id)
           .run();
       }
+      await streakPass(env, now);
     } catch (err) {
       console.error('[system] scheduled reminder failed:', err);
     }

@@ -39,10 +39,28 @@ a CI-built Android app.
 - **Achievements** — eleven milestones (streaks, levels, quests, hydration,
   weigh-ins, meals, sharing) that unlock once and pay XP, shown as a badge
   shelf in the Hunter Record.
+- **Set-by-set logging** — every set can be recorded with its own reps and
+  weight. From that come personal records, a "last time you did 80 kg × 8" line
+  under each exercise, and a next-load suggestion once you hit every rep.
+- **Live session** — one exercise at a time from the Today screen: log a set,
+  rest on a 60/90/120/180-second timer, move on. Nothing else to scroll.
+- **Starting program** — onboarding asks for experience, equipment and days per
+  week, then builds the workout library and the weekly schedule for you (gym,
+  dumbbells at home, or bodyweight only). Progress → REBUILD PROGRAM redoes it
+  whenever those change; logged history is never touched.
 - **Workout history** — every cleared day becomes a session with its exercises,
   sets, load and an optional note. HISTORY → + LOG SESSION backfills a workout
-  you already trained on any past date, so a streak started before the app did
-  is not lost.
+  you already trained on any past date (from the library, or as a one-off you
+  type in), so a streak started before the app did is not lost. Each card has
+  REMOVE, which returns the XP and stops the day counting.
+- **Body measurements** — waist, chest, arms, thighs and body-fat next to the
+  weigh-ins, with the change since the first entry, because the scale alone
+  hides recomposition.
+- **Adaptive targets** — calories, protein and water are derived from your
+  current weight and goal. A typed target is respected until you press
+  RECALIBRATE TARGETS, so a weigh-in never quietly overwrites your numbers.
+- **Weekly report** — sessions against plan, volume, sets, water and protein
+  days for the last seven, shareable as a 1080×1350 image card.
 - **Share your record** — a native share sheet (clipboard fallback) with the
   hunter's level, rank, quests and streak, so progress is easy to post.
 - **Google sign-in** — either sign in with Google, or attach Google to an
@@ -98,6 +116,7 @@ npm run worker        # wrangler dev on http://localhost:8787
 Checks:
 
 ```bash
+npm test                       # state maths + AI transport helpers (vm, no DOM)
 node scripts/test-push.mjs     # Web Push encryption + VAPID JWT round trip
 npm run check:secrets          # tracked files hold no credentials
 ```
@@ -156,6 +175,14 @@ The origin is taken from `APP_ORIGIN` when set, otherwise from the request, so a
 deployment works without extra configuration. All secrets are read on the
 server only.
 
+**If a secret leaks** — a key pasted into a tracked file, committed by mistake,
+or shown in a screenshot is in the git history even after the file is deleted.
+Deleting the file is not enough. Rotate the value first (`OPENAI_API_KEY` is
+cheap to replace; a new VAPID pair drops existing push subscriptions, which
+re-subscribe when each device next opens the app), then rewrite history if the
+repository is public. Run `npm run check:secrets` before every push — the
+pre-commit hook does it for you once `npm install` has run.
+
 ### Google sign-in
 
 1. Create an OAuth 2.0 **Web application** client in Google Cloud Console.
@@ -188,7 +215,9 @@ Public: `GET /api/health`, `GET /api/auth/config`,
 
 Signed in (`401` otherwise): `GET|PUT /api/state`,
 `POST /api/ai/suggest`, `GET /api/push/config`,
-`POST /api/push/subscribe|unsubscribe|test|prefs|tick`.
+`POST /api/push/subscribe|unsubscribe|test|prefs|tick`,
+`POST /api/account/delete` (`{ confirm: "DELETE" }`; removes the account and
+every row belonging to it).
 
 Writes also require a same-origin `Origin` header; a stale `PUT` answers `409`
 with the stored copy.
@@ -202,6 +231,9 @@ ECDH P-256 key and aes128gcm — no external push service and no dependency.
 - The client also calls `/api/push/tick` on open and on a timer, so reminders
   still arrive on hosts that do not run the scheduled trigger.
 - Quiet hours are 08:00–22:00 in the browser's timezone.
+- A **streak check-in** goes out at the hour set in Settings (default 20:00)
+  when a workout is scheduled, still open, and at least 20 hours have passed
+  since the last nudge. It names the streak that is on the line.
 
 ## Android app (TWA)
 
