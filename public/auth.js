@@ -15,10 +15,11 @@ const auth = {
   checked: false,
   offline: false,
   guest: false,
-  config: { google: false, push: false },
+  config: { google: false, push: false, mail: false },
   mode: 'signin',
   busy: false,
-  notice: ''
+  notice: '',
+  resetToken: ''
 };
 
 function authUser() {
@@ -88,7 +89,7 @@ async function loadAuthConfig() {
     const res = await fetch('/api/auth/config', { cache: 'no-store', headers: { Accept: 'application/json' } });
     if (!res.ok) return;
     const data = await res.json();
-    auth.config = { google: !!data.google, push: !!data.push };
+    auth.config = { google: !!data.google, push: !!data.push, mail: !!data.mail };
   } catch {
     /* offline: defaults keep the email form available */
   }
@@ -180,6 +181,8 @@ async function submitAuth(mode, form) {
     applyUser(body.user);
     form.reset();
     toast(`Access granted. Welcome, ${body.user.name}.`, 'gold');
+    if (body.verify === 'sent') toast('Check your inbox to confirm the address.', 'gold');
+    else if (body.verify === 'unconfigured') toast('Account created. Email confirmation is unavailable on this deployment.', 'gold');
     if (typeof afterAuthChange === 'function') afterAuthChange();
   } catch {
     auth.notice = 'No connection to the server. Check your network and try again.';
@@ -204,6 +207,159 @@ async function authSignOut() {
   if (typeof toast === 'function') toast('Signed out. This device keeps its local copy.');
 }
 
+/* ---------------- account menu, recovery, devices ---------------- */
+
+function accountStatusHtml() {
+  if (!auth.user) {
+    return auth.guest
+      ? 'This device is running without an account. Create one to carry the record to other devices.'
+      : 'Not signed in.';
+  }
+  const bits = [esc(auth.user.email)];
+  if (!auth.user.hasPassword) bits.push('Google only');
+  bits.push(auth.user.verified ? 'email confirmed' : 'email not confirmed');
+  return `Signed in as ${bits.join(' · ')}`;
+}
+
+function openAccountMenu() {
+  if (typeof openModal !== 'function') return;
+  openModal(`
+    <h2>ACCOUNT</h2>
+    <div class="sub">${auth.user ? `Signed in as ${esc(auth.user.name || auth.user.email)}` : 'Not signed in'}</div>
+    <p class="panel-sub" style="margin:0 0 12px;line-height:1.6">${accountStatusHtml()}</p>
+    ${auth.user && !auth.user.verified
+      ? `<p class="auth-hint" style="margin:0 0 12px;line-height:1.6">${auth.config.mail ? 'Confirm the address to make password recovery and Google linking safe.' : 'Email delivery is not configured on this deployment, so confirmation is unavailable.'}</p>`
+      : ''}
+    <div class="modal-actions" style="justify-content:flex-start;flex-wrap:wrap">
+      ${auth.user
+        ? `<button class="btn" data-act="account-devices">SIGNED-IN DEVICES</button>
+           <button class="btn ghost" data-act="auth-signout">SIGN OUT</button>
+           ${auth.user.verified ? '' : '<button class="btn ghost" data-act="account-verify">CONFIRM EMAIL</button>'}`
+        : '<button class="btn primary" data-act="auth-open">SIGN IN</button>'}
+      <button class="btn ghost" data-act="account-forgot">FORGOT PASSWORD</button>
+      <button class="btn ghost" data-act="modal-close">CLOSE</button>
+    </div>
+    ${auth.config.mail ? '' : '<p class="panel-sub" style="margin:12px 0 0;font-size:12px;line-height:1.6">Password reset by email needs RESEND_API_KEY or POSTMARK_TOKEN set on the server.</p>'}
+  `);
+}
+
+async function forgotPassword() {
+  const email = window.prompt('Enter the email on the account. A reset link is sent if the address exists.', auth.user ? auth.user.email : '');
+  if (!email) return;
+  try {
+    const res = await fetch('/api/auth/password/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: String(email).trim() })
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast((body && body.error) || `Could not send the link (HTTP ${res.status}).`, 'danger');
+      return;
+    }
+    toast(
+      body && body.mail === 'unconfigured'
+        ? 'Email is not configured on this server, so no link could be sent.'
+        : 'If that address has an account, a reset link is on its way.',
+      'gold'
+    );
+  } catch {
+    toast('No connection to the server.', 'danger');
+  }
+}
+
+async function resendVerification() {
+  if (!auth.user) { toast('Sign in first.', 'danger'); return; }
+  try {
+    const res = await fetch('/api/auth/verify/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast((body && body.error) || 'Could not send the confirmation.', 'danger');
+      return;
+    }
+    toast('Confirmation sent. Open the link in that inbox.', 'gold');
+  } catch {
+    toast('No connection to the server.', 'danger');
+  }
+}
+
+async function resetPassword() {
+  const input = document.querySelector('[data-reset-password]');
+  const password = String(input ? input.value : '');
+  if (password.length < 8) { toast('Use a password with at least 8 characters.', 'danger'); return; }
+  try {
+    const res = await fetch('/api/auth/password/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: auth.resetToken, password })
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || !body.user) {
+      toast((body && body.error) || 'That link did not work. Ask for a new one.', 'danger');
+      return;
+    }
+    auth.resetToken = '';
+    applyUser(body.user);
+    if (typeof closeModal === 'function') closeModal();
+    toast('Password changed. Every other device was signed out.', 'gold');
+    if (typeof afterAuthChange === 'function') afterAuthChange();
+    history.replaceState(null, '', location.pathname);
+  } catch {
+    toast('No connection to the server.', 'danger');
+  }
+}
+
+function openResetForm() {
+  if (typeof openModal !== 'function') return;
+  openModal(`
+    <h2>SET A NEW PASSWORD</h2>
+    <div class="sub">The link is single-use and expires after 30 minutes.</div>
+    <label class="field"><span class="lbl">NEW PASSWORD (8+ CHARACTERS)</span>
+      <input type="password" minlength="8" autocomplete="new-password" data-reset-password />
+    </label>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="reset-save">SAVE PASSWORD</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+async function openDevices() {
+  try {
+    const res = await fetch('/api/auth/sessions', { cache: 'no-store' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body) { toast('Could not read the session list.', 'danger'); return; }
+    const rows = (body.sessions || []).map((s) => {
+      const when = s.created ? new Date(s.created).toLocaleString() : 'unknown time';
+      const agent = s.userAgent ? s.userAgent.split(')')[0] + ')' : 'unknown device';
+      return `<li class="set-row"><span class="set-no">${s.current ? 'THIS DEVICE' : 'DEVICE'}</span>
+        <span class="set-val">${esc(agent)} · ${esc(when)}</span></li>`;
+    }).join('');
+    openModal(`
+      <h2>SIGNED-IN DEVICES</h2>
+      <div class="sub">Sessions last 30 days. Signing out everywhere keeps this device signed in.</div>
+      ${rows ? `<ul class="set-list">${rows}</ul>` : '<div class="empty">No live sessions found.</div>'}
+      <div class="modal-actions">
+        <button class="btn danger" data-act="account-revoke">SIGN OUT EVERYWHERE</button>
+        <button class="btn ghost" data-act="modal-close">CLOSE</button>
+      </div>
+    `);
+  } catch {
+    toast('No connection to the server.', 'danger');
+  }
+}
+
+async function revokeOtherSessions() {
+  try {
+    const res = await fetch('/api/auth/sessions/revoke-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!res.ok) { toast('Could not sign the other devices out.', 'danger'); return; }
+    toast('Every other device was signed out.', 'gold');
+    openDevices();
+  } catch {
+    toast('No connection to the server.', 'danger');
+  }
+}
+
 function useAsGuest() {
   auth.guest = true;
   auth.notice = '';
@@ -224,6 +380,12 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   if (el.dataset.act === 'auth-guest') useAsGuest();
+  else if (el.dataset.act === 'account-menu') openAccountMenu();
+  else if (el.dataset.act === 'account-devices') openDevices();
+  else if (el.dataset.act === 'account-forgot' || el.dataset.act === 'forgot-password') forgotPassword();
+  else if (el.dataset.act === 'account-verify') resendVerification();
+  else if (el.dataset.act === 'account-revoke') revokeOtherSessions();
+  else if (el.dataset.act === 'reset-save') resetPassword();
   else if (el.dataset.act === 'auth-signout') authSignOut();
   else if (el.dataset.act === 'auth-open') {
     auth.checked = true;
@@ -247,7 +409,18 @@ document.addEventListener('submit', (e) => {
   const params = new URLSearchParams(location.search);
   const code = params.get('auth');
   if (!code) return;
+  const reset = params.get('reset');
+  if (reset) {
+    auth.resetToken = reset;
+    history.replaceState(null, '', location.pathname);
+    setTimeout(() => openResetForm(), 300);
+    return;
+  }
   const messages = {
+    'email-verified': 'Email confirmed. Password recovery and Google linking are now safe to use.',
+    'verify-failed': 'That confirmation link expired or was already used. Ask for a new one from the account menu.',
+    'google-link-required': 'That email already has a password account. Sign in with it, then connect Google in Settings.',
+    'google-unverified': 'Google did not confirm that email address, so sign-in was refused.',
     'google-failed': 'Google sign-in did not complete. Try again, or use your email and password.',
     'google-unavailable': 'Google sign-in is not configured on this deployment.',
     'google-linked': 'Google connected. You can now sign in with either Google or your password.',

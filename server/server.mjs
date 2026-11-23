@@ -29,6 +29,7 @@ import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // The planner transport is shared with the hosted Worker so the two agree.
 import { aiFailureHint, cleanMeals, requestAi } from '../worker/ai.js';
+import { mailConfigured, resetMessage, sendMail, verifyMessage } from '../worker/mail.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = resolve(ROOT, 'public');
@@ -81,7 +82,7 @@ async function loadEnvFile() {
 
 /* ---------------- store ---------------- */
 
-const EMPTY_DB = { users: [], sessions: {}, records: {}, pushSubs: [], pushPrefs: {}, aiUsage: {} };
+const EMPTY_DB = { users: [], sessions: {}, records: {}, pushSubs: [], pushPrefs: {}, aiUsage: {}, authTokens: [], throttle: {} };
 let db = null;
 let writeChain = Promise.resolve();
 
@@ -113,6 +114,59 @@ function queueWrite() {
 
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 
+/* ---------------- abuse guard (mirrors the Worker) ---------------- */
+
+function clientIp(req) {
+  return String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || 'local').split(',')[0].trim();
+}
+
+function hitLimit(key, limit, windowMs) {
+  const now = Date.now();
+  const row = db.throttle[key];
+  if (!row || now > row.resetAt) {
+    db.throttle[key] = { count: 1, resetAt: now + windowMs };
+    queueWrite();
+    return { ok: true };
+  }
+  if (row.count >= limit) return { ok: false, retryAt: row.resetAt };
+  row.count += 1;
+  queueWrite();
+  return { ok: true };
+}
+
+function clearLimit(key) {
+  delete db.throttle[key];
+  queueWrite();
+}
+
+function issueToken(userId, kind, ttlMs) {
+  const raw = randomBytes(24).toString('base64url');
+  db.authTokens = (db.authTokens || []).filter((t) => t.expiresAt > Date.now());
+  db.authTokens.push({ id: hashToken(raw), userId, kind, expiresAt: Date.now() + ttlMs, usedAt: null });
+  queueWrite();
+  return raw;
+}
+
+function consumeToken(raw, kind) {
+  const id = hashToken(String(raw || ''));
+  const row = (db.authTokens || []).find((t) => t.id === id && t.kind === kind);
+  if (!row || row.usedAt || row.expiresAt < Date.now()) return null;
+  row.usedAt = new Date().toISOString();
+  queueWrite();
+  return row.userId;
+}
+
+/* Local development has no mail provider, so the link is printed instead of
+   silently dropped. That is what makes reset testable offline. */
+async function deliver(to, message, origin) {
+  if (!mailConfigured(process.env)) {
+    console.log(`[mail] to ${to}: ${message.subject}\n${message.text}`);
+    return 'logged';
+  }
+  const result = await sendMail(process.env, { to, ...message });
+  return result.sent ? 'sent' : 'failed';
+}
+
 function hashPassword(password, salt = randomBytes(16).toString('base64url')) {
   const hash = pbkdf2Sync(password, Buffer.from(salt, 'base64url'), 120000, 32, 'sha256').toString('base64url');
   return { salt, hash };
@@ -132,7 +186,8 @@ function publicUser(user) {
     name: user.name,
     avatar: user.avatar || null,
     hasPassword: !!user.hash,
-    google: !!user.googleSub
+    google: !!user.googleSub,
+    verified: !!user.emailVerified
   };
 }
 
@@ -159,9 +214,14 @@ function currentUser(req) {
   return db.users.find((u) => u.id === session.userId) || null;
 }
 
-function startSession(res, userId) {
+function startSession(res, userId, userAgent) {
   const token = randomBytes(32).toString('base64url');
-  db.sessions[hashToken(token)] = { userId, expiresAt: Date.now() + SESSION_MS };
+  db.sessions[hashToken(token)] = {
+    userId,
+    expiresAt: Date.now() + SESSION_MS,
+    createdAt: new Date().toISOString(),
+    userAgent: String(userAgent || '').slice(0, 160)
+  };
   res.setHeader('Set-Cookie', `sys_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
   queueWrite();
 }
@@ -394,11 +454,19 @@ async function handleState(req, res, user) {
   return sendJson(res, 200, { ok: true, revision: record.revision, updatedAt, savedAt: record.savedAt });
 }
 
+function redirectTo(res, location) {
+  res.statusCode = 303;
+  res.setHeader('Location', location);
+  res.setHeader('Cache-Control', 'no-store');
+  res.end();
+}
+
 async function handleAuth(req, res, pathname) {
   if (pathname === '/api/auth/config') {
     return sendJson(res, 200, {
       google: false,
       email: true,
+      mail: mailConfigured(process.env),
       push: !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY)
     });
   }
@@ -416,12 +484,56 @@ async function handleAuth(req, res, pathname) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (pathname === '/api/auth/verify') {
+    const token = new URL(req.url, 'http://localhost').searchParams.get('token') || '';
+    const userId = consumeToken(token, 'verify');
+    if (!userId) return redirectTo(res, '/?auth=verify-failed');
+    const target = db.users.find((u) => u.id === userId);
+    if (!target) return redirectTo(res, '/?auth=verify-failed');
+    target.emailVerified = true;
+    queueWrite();
+    return redirectTo(res, '/?auth=email-verified');
+  }
+
+  if (pathname === '/api/auth/verify/request') {
+    const user = currentUser(req);
+    if (!user) return sendJson(res, 401, { error: 'sign in required' });
+    if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
+    if (user.emailVerified) return sendJson(res, 200, { ok: true, already: true });
+    if (!mailConfigured(process.env)) return sendJson(res, 503, { error: 'Email is not configured on this deployment.' });
+    const origin = `http://localhost:${PORT}`;
+    const token = issueToken(user.id, 'verify', 24 * 3600 * 1000);
+    const state = await deliver(user.email, verifyMessage(origin, `${origin}/api/auth/verify?token=${encodeURIComponent(token)}`), origin);
+    return sendJson(res, 200, { ok: state !== 'failed', state });
+  }
+
+  if (pathname === '/api/auth/sessions' || pathname === '/api/auth/sessions/revoke-all') {
+    const user = currentUser(req);
+    if (!user) return sendJson(res, 401, { error: 'sign in required' });
+    const cookie = parseCookies(req).sys_session;
+    const currentId = cookie ? hashToken(cookie) : null;
+    if (pathname === '/api/auth/sessions/revoke-all') {
+      Object.keys(db.sessions).forEach((id) => {
+        if (db.sessions[id].userId === user.id && id !== currentId) delete db.sessions[id];
+      });
+      queueWrite();
+      return sendJson(res, 200, { ok: true });
+    }
+    const sessions = Object.entries(db.sessions)
+      .filter(([, s]) => s.userId === user.id && Number(s.expiresAt) > Date.now())
+      .map(([id, s]) => ({ created: s.createdAt || '', userAgent: s.userAgent || '', current: id === currentId }));
+    return sendJson(res, 200, { sessions });
+  }
+
   const body = await jsonBody(req);
   if (body.__error) return sendJson(res, 400, { error: body.__error });
 
   if (pathname === '/api/auth/signup') {
     const email = String(body.email || '').trim().toLowerCase();
     const password = String(body.password || '');
+    if (!hitLimit(`signup:${clientIp(req)}`, 8, 3600 * 1000).ok) {
+      return sendJson(res, 429, { error: 'Too many accounts from this connection. Try again in a little while.' });
+    }
     if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) return sendJson(res, 400, { error: 'That email address does not look right.' });
     if (password.length < 8) return sendJson(res, 400, { error: 'Use a password with at least 8 characters.' });
     if (db.users.some((u) => u.email === email)) {
@@ -434,20 +546,65 @@ async function handleAuth(req, res, pathname) {
       name: String(body.name || '').trim().slice(0, 60) || email.split('@')[0],
       salt: creds.salt,
       hash: creds.hash,
+      emailVerified: false,
       createdAt: new Date().toISOString()
     };
     db.users.push(user);
-    startSession(res, user.id);
-    return sendJson(res, 200, { user: publicUser(user) });
+    let mailState = 'unconfigured';
+    if (mailConfigured(process.env)) {
+      const origin = `http://localhost:${PORT}`;
+      const token = issueToken(user.id, 'verify', 24 * 3600 * 1000);
+      mailState = await deliver(user.email, verifyMessage(origin, `${origin}/api/auth/verify?token=${encodeURIComponent(token)}`), origin);
+    }
+    startSession(res, user.id, req.headers['user-agent']);
+    queueWrite();
+    return sendJson(res, 200, { user: publicUser(user), verify: mailState });
   }
 
   if (pathname === '/api/auth/login') {
     const email = String(body.email || '').trim().toLowerCase();
+    const gateKey = `login:${clientIp(req)}:${email.slice(0, 80)}`;
+    if (!hitLimit(gateKey, 10, 15 * 60 * 1000).ok) {
+      return sendJson(res, 429, { error: 'Too many attempts. Wait 15 minutes, or reset your password.' });
+    }
     const user = db.users.find((u) => u.email === email);
     if (!user || !passwordMatches(String(body.password || ''), user)) {
       return sendJson(res, 401, { error: 'No account matches that email and password.' });
     }
-    startSession(res, user.id);
+    clearLimit(gateKey);
+    startSession(res, user.id, req.headers['user-agent']);
+    return sendJson(res, 200, { user: publicUser(user) });
+  }
+
+  if (pathname === '/api/auth/password/request') {
+    const gate = hitLimit(`reset:${clientIp(req)}`, 6, 3600 * 1000);
+    if (!gate.ok) return sendJson(res, 429, { error: 'Too many reset requests. Try again later.' });
+    const email = String(body.email || '').trim().toLowerCase();
+    const user = db.users.find((u) => u.email === email);
+    const origin = `http://localhost:${PORT}`;
+    if (user && user.hash) {
+      const token = issueToken(user.id, 'reset', 30 * 60 * 1000);
+      await deliver(user.email, resetMessage(origin, `${origin}/?reset=${encodeURIComponent(token)}`), origin);
+    }
+    return sendJson(res, 200, { ok: true, mail: mailConfigured(process.env) ? 'sent' : 'logged' });
+  }
+
+  if (pathname === '/api/auth/password/reset') {
+    const password = String(body.password || '');
+    if (password.length < 8) return sendJson(res, 400, { error: 'Use a password with at least 8 characters.' });
+    const userId = consumeToken(body.token, 'reset');
+    if (!userId) return sendJson(res, 400, { error: 'That reset link has expired. Ask for a new one.' });
+    const user = db.users.find((u) => u.id === userId);
+    if (!user) return sendJson(res, 400, { error: 'That account no longer exists.' });
+    const creds = hashPassword(password);
+    user.salt = creds.salt;
+    user.hash = creds.hash;
+    user.emailVerified = true;
+    Object.keys(db.sessions).forEach((id) => {
+      if (db.sessions[id].userId === userId) delete db.sessions[id];
+    });
+    queueWrite();
+    startSession(res, userId, req.headers['user-agent']);
     return sendJson(res, 200, { user: publicUser(user) });
   }
 
@@ -530,6 +687,9 @@ const server = createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   try {
     if (pathname === '/api/health') return sendJson(res, 200, { ok: true });
+    if (pathname === '/api/version') {
+      return sendJson(res, 200, { app: 'system-fitness', commit: 'local', builtAt: '' });
+    }
     if (pathname === '/.well-known/assetlinks.json') {
       const prints = String(process.env.TWA_FINGERPRINT || '').split(',').map((s) => s.trim()).filter(Boolean);
       if (!prints.length) return sendJson(res, 404, { error: 'no fingerprint configured' });
@@ -561,6 +721,7 @@ const server = createServer(async (req, res) => {
         delete db.pushPrefs[user.id];
         delete db.aiUsage[user.id];
         db.pushSubs = db.pushSubs.filter((sub) => sub.userId !== user.id);
+        db.authTokens = (db.authTokens || []).filter((t) => t.userId !== user.id);
         Object.keys(db.sessions).forEach((token) => {
           if (db.sessions[token] && db.sessions[token].userId === user.id) delete db.sessions[token];
         });

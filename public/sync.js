@@ -7,9 +7,10 @@
    localStorage stays the offline cache, so the app keeps working with the
    server down or closed.
 
-   Conflict rule: last write wins on meta.updatedAt. Anything newer than
-   this tab — another tab, a device, the server — is adopted rather than
-   overwritten, and the server answers a stale write with 409 + its copy.
+   Conflict rule: a stale write is answered with 409 + the server's copy.
+   The two copies are then merged (merge.js) instead of one being dropped:
+   days, sets and entries are unioned, and the later copy wins the scalars.
+   The losing copy is kept in a .conflict key so nothing is ever lost.
 
    Access: every API call carries the session cookie. A 401 reopens the
    sign-in screen and the app continues from the local copy.
@@ -104,6 +105,30 @@ function adopt(data) {
   return true;
 }
 
+/* A stale write means another device wrote while this one was offline. Both
+   records hold real work, so they are merged; the server's copy is also kept
+   in localStorage as `<key>.conflict` in case a merge ever looks wrong. */
+function mergeConflict(remote) {
+  if (!remote || !remote.state) return false;
+  try {
+    localStorage.setItem(`${STORE_KEY}.conflict`, JSON.stringify(remote));
+  } catch {
+    /* private mode */
+  }
+  const merged = typeof mergeStates === 'function' ? mergeStates(state, remote.state) : remote.state;
+  adopting = true;
+  state = normalizeState(merged);
+  if (typeof ensureStartDate === 'function') ensureStartDate();
+  save();
+  adopting = false;
+  sync.error = '';
+  sync.at = Date.now();
+  if (!modalOpen()) renderAll();
+  paintSync();
+  toast('Two devices had new work — both records were merged, nothing lost.', 'gold');
+  return true;
+}
+
 /* ---------------- operations ---------------- */
 
 async function push(silent) {
@@ -124,8 +149,7 @@ async function push(silent) {
     });
 
     if (res.status === 409) {
-      adopt(res.body);
-      toast('The server held a newer record — this browser took that copy.', 'gold');
+      mergeConflict(res.body);
     } else if (res.status === 401) {
       if (!silent) toast('Sign in again to save to the server.', 'danger');
     } else if (!res.ok) {

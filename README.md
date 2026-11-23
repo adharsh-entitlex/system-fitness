@@ -64,7 +64,32 @@ a CI-built Android app.
 - **Share your record** — a native share sheet (clipboard fallback) with the
   hunter's level, rank, quests and streak, so progress is easy to post.
 - **Google sign-in** — either sign in with Google, or attach Google to an
-  existing email account from Settings → GOOGLE ACCOUNT.
+  existing email account from Settings → GOOGLE ACCOUNT. Google only ever
+  attaches to an account the owner signed into first, and a Google address
+  Google itself has not verified is refused.
+- **Password recovery** — forgot-password sends a single-use link (30 minutes)
+  through Resend or Postmark. A reset drops every other session, so a stolen
+  cookie does not survive it. Accounts also carry an email-confirmed flag.
+- **Account controls** — a header account button, signed-out sign-in, SIGN OUT,
+  a device list and SIGN OUT EVERYWHERE (the device asking stays in).
+- **Two devices, one record** — a stale sync no longer overwrites the other
+  copy. Days, sets, meals and water are merged; the losing copy is also kept
+  in `<store>.conflict` locally.
+- **Autoregulation** — an estimated 1RM per lift from the logged sets, a
+  three-session stall check, and a deload weight when a lift stops moving.
+- **Plate and warm-up guide** — the loading per side for the weight in the box,
+  plus a 40/60/80% ramp before the working set.
+- **Program sharing** — SHARE PROGRAM makes a link with the split in the URL
+  fragment; IMPORT PROGRAM loads one without touching history.
+- **Streak insurance** — mark a day as rest (illness, travel) and it counts as
+  neutral instead of zeroing a run.
+- **Crash-safe sessions** — a live session survives a reload or a killed tab for
+  six hours, and the screen stays awake while it is open.
+- **A record with a ceiling** — detail older than two years rolls into monthly
+  summaries, and Settings warns before browser storage fills.
+- **Deployments that identify themselves** — `/api/version` reports the commit
+  it was built from, `npm run check:live` diffs every deployment against HEAD,
+  and CI runs the tests, the secret guard and the bundle on every push.
 
 ## Local development
 
@@ -116,9 +141,10 @@ npm run worker        # wrangler dev on http://localhost:8787
 Checks:
 
 ```bash
-npm test                       # state maths + AI transport helpers (vm, no DOM)
+npm test                       # state maths, merge, plates, archiving (vm, no DOM)
 node scripts/test-push.mjs     # Web Push encryption + VAPID JWT round trip
 npm run check:secrets          # tracked files hold no credentials
+npm run check:live             # every deployment reports HEAD (needs network)
 ```
 
 `npm install` points git at `.githooks/`, so `git commit` runs that credential
@@ -170,6 +196,8 @@ Secrets (Sites → Secrets) — deploy once *before* setting them:
 | `OPENAI_API_KEY` | AI meal plan | a Freebuff key, a plain OpenAI (`sk-…`) key or a free Groq key (`gsk_…`); the endpoint and model follow the key, and the planner returns a setup hint until the secret exists |
 | `GOOGLE_CLIENT_ID` | Google sign-in | optional |
 | `GOOGLE_CLIENT_SECRET` | Google sign-in | optional |
+| `RESEND_API_KEY` | password reset, email confirmation | optional; `POSTMARK_TOKEN` works too |
+| `MAIL_FROM` | the sender on those emails | e.g. `THE SYSTEM <no-reply@yourdomain>`; Resend's test sender works before a domain is verified |
 
 The origin is taken from `APP_ORIGIN` when set, otherwise from the request, so a
 deployment works without extra configuration. All secrets are read on the
@@ -214,6 +242,29 @@ different environment than the URL you opened.
 Until both are set the button stays hidden and `/api/auth/config` reports
 `google: false`; email + password keeps working.
 
+Google never attaches itself to a password account from the public flow: if
+that email already has one, the callback stops at `?auth=google-link-required`
+and the owner has to sign in and press CONNECT GOOGLE. A Google address whose
+`email_verified` claim is false is refused outright (`?auth=google-unverified`).
+Without those two rules, anyone could pre-register someone else's address and
+inherit their account the first time the real owner tapped the Google button.
+
+### Password reset and email confirmation
+
+Both need a transactional mail key on the Worker: `RESEND_API_KEY` (or
+`POSTMARK_TOKEN`), plus `MAIL_FROM` for the sender. Resend's `onboarding@resend.dev`
+sender works before a domain is verified; a real domain needs its DNS records
+added in Resend first.
+
+- `POST /api/auth/password/request { email }` always answers `{ ok: true }`, so
+  it cannot be used to discover which addresses exist. The link is single-use,
+  expires in 30 minutes, and resetting drops every other session.
+- `POST /api/auth/verify/request` (signed in) re-sends the confirmation;
+  `GET /api/auth/verify?token=…` marks the address confirmed.
+- Locally, `npm start` prints the message to the terminal instead of sending
+  it, so the whole flow is testable offline.
+- No key means sign-in still works and the UI says confirmation is unavailable.
+
 Signed-in users can attach Google to their existing account: Settings →
 GOOGLE ACCOUNT → CONNECT GOOGLE. The intent rides in the same HttpOnly state
 cookie as the OAuth `state`, so `/api/auth/google/start?link=1` can only link
@@ -228,12 +279,16 @@ created inherits the single record from the pre-accounts era.
 
 ## API
 
-Public: `GET /api/health`, `GET /api/auth/config`,
-`GET /api/auth/session`, `GET /api/auth/google/start|callback`,
+Public: `GET /api/health`, `GET /api/version` (build commit),
+`GET /api/auth/config`, `GET /api/auth/session`,
+`GET /api/auth/google/start|callback`, `GET /api/auth/verify?token=…`,
+`POST /api/auth/signup|login|logout`, `POST /api/auth/password/request|reset`,
 `GET /.well-known/assetlinks.json`.
 
 Signed in (`401` otherwise): `GET|PUT /api/state`,
-`POST /api/ai/suggest`, `GET /api/push/config`,
+`POST /api/auth/verify/request`, `GET /api/auth/sessions`,
+`POST /api/auth/sessions/revoke-all`, `POST /api/ai/suggest`,
+`GET /api/push/config`,
 `POST /api/push/subscribe|unsubscribe|test|prefs|tick`,
 `POST /api/account/delete` (`{ confirm: "DELETE" }`; removes the account and
 every row belonging to it).

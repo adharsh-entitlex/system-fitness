@@ -146,12 +146,14 @@ function openSetLogger(key, index) {
     ${rows ? `<ul class="set-list">${rows}</ul>` : '<div class="empty">No sets recorded yet.</div>'}
     <div class="form-grid two">
       <label class="field"><span class="lbl">WEIGHT (KG)</span>
-        <input type="number" min="0" max="500" step="0.5" inputmode="decimal" data-set-field="weight" value="${lastSet ? lastSet.weight : (Number(ex.weight) || 0)}" />
+        <input type="number" min="0" max="500" step="0.5" inputmode="decimal" data-set-field="weight" data-change="set-weight" value="${lastSet ? lastSet.weight : (Number(ex.weight) || 0)}" />
       </label>
       <label class="field"><span class="lbl">REPS</span>
         <input type="number" min="0" max="500" inputmode="numeric" data-set-field="reps" value="${reps}" />
       </label>
     </div>
+    <p class="plate-line">${esc(plateLine(lastSet ? lastSet.weight : (Number(ex.weight) || 0)))}</p>
+    ${warmupHtml(lastSet ? lastSet.weight : (Number(ex.weight) || 0))}
     <div class="modal-actions">
       <button class="btn primary" data-act="set-add" data-key="${key}" data-i="${index}">LOG THIS SET</button>
       <button class="btn ghost" data-act="modal-close">DONE</button>
@@ -200,6 +202,62 @@ function removeSet(key, index, setIndex) {
 /* ---------------- live session ---------------- */
 
 let liveSession = null;
+let wakeLock = null;
+
+/* Keeping the screen on between sets is the difference between the phone
+   sleeping at set 2 and the session being usable in a real gym. The lock is
+   best-effort: browsers without it simply skip this. */
+async function requestWakeLock() {
+  try {
+    if (!navigator.wakeLock || wakeLock) return;
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (err) {
+    wakeLock = null;
+  }
+}
+
+function releaseWakeLock() {
+  try {
+    if (wakeLock) wakeLock.release();
+  } catch (err) {
+    /* ignore */
+  }
+  wakeLock = null;
+}
+
+/* The session itself lives in the record, so a reload, a locked phone or a
+   killed tab can pick it up instead of starting over. */
+function persistLiveSession() {
+  if (!liveSession) return;
+  state.live = {
+    key: liveSession.key,
+    index: liveSession.index,
+    until: liveSession.until || 0,
+    startedAt: liveSession.startedAt || Date.now()
+  };
+  save();
+}
+
+function resumeLiveSession() {
+  const saved = state.live;
+  if (!saved || !saved.key || !state.logs[saved.key]) {
+    if (saved) { state.live = null; save(); }
+    return false;
+  }
+  const log = state.logs[saved.key];
+  const index = Math.min(Math.max(0, Number(saved.index) || 0), Math.max(0, log.exercises.length - 1));
+  liveSession = {
+    key: saved.key,
+    index,
+    until: Number(saved.until) || 0,
+    startedAt: Number(saved.startedAt) || Date.now(),
+    timer: setInterval(paintRestClock, 500)
+  };
+  requestWakeLock();
+  renderLiveSession();
+  return true;
+}
 
 function restSeconds() {
   const value = Number((state.meta || {}).restSec);
@@ -213,7 +271,9 @@ function startLiveSession(key) {
     return;
   }
   const firstOpen = log.exercises.findIndex((ex) => !ex.done);
-  liveSession = { key, index: firstOpen >= 0 ? firstOpen : 0, until: 0 };
+  liveSession = { key, index: firstOpen >= 0 ? firstOpen : 0, until: 0, startedAt: Date.now() };
+  persistLiveSession();
+  requestWakeLock();
   renderLiveSession();
   if (liveSession && liveSession.timer) clearInterval(liveSession.timer);
   liveSession.timer = setInterval(paintRestClock, 500);
@@ -225,6 +285,9 @@ function endLiveSession(silent) {
   const done = ensureLog(liveSession.key).exercises.filter((e) => e.done).length;
   const total = ensureLog(liveSession.key).exercises.length;
   liveSession = null;
+  state.live = null;
+  releaseWakeLock();
+  save();
   closeModal();
   if (!silent) toast(`Session ended — ${done}/${total} exercises done.`, done === total ? 'gold' : '');
   renderAll();
@@ -273,12 +336,14 @@ function renderLiveSession() {
     <div class="live-sets">${chips}</div>
     <div class="form-grid two">
       <label class="field"><span class="lbl">WEIGHT (KG)</span>
-        <input type="number" min="0" max="500" step="0.5" inputmode="decimal" data-set-field="weight" value="${lastSet ? lastSet.weight : (Number(ex.weight) || 0)}" />
+        <input type="number" min="0" max="500" step="0.5" inputmode="decimal" data-set-field="weight" data-change="set-weight" value="${lastSet ? lastSet.weight : (Number(ex.weight) || 0)}" />
       </label>
       <label class="field"><span class="lbl">REPS</span>
         <input type="number" min="0" max="500" inputmode="numeric" data-set-field="reps" value="${Number(ex.reps) || 10}" />
       </label>
     </div>
+    <p class="plate-line">${esc(plateLine(lastSet ? lastSet.weight : (Number(ex.weight) || 0)))}</p>
+    ${warmupHtml(lastSet ? lastSet.weight : (Number(ex.weight) || 0))}
     <div class="live-row">
       <button class="btn primary" data-act="live-set" data-key="${key}">LOG SET + REST</button>
       <label class="field live-rest-pick"><span class="lbl">REST</span>
@@ -310,7 +375,7 @@ function liveLogSet(key) {
   const planned = Number(ex.sets) || 0;
   if (planned && setsOf(ex).length >= planned) ex.done = true;
   liveSession.until = Date.now() + restSeconds() * 1000;
-  save();
+  persistLiveSession();
   renderLiveSession();
   if (pr && Number(weight) > pr.weight) toast(`NEW RECORD · ${ex.name} ${weight} kg`, 'gold');
 }
@@ -322,6 +387,7 @@ function liveMove(delta) {
   if (next < 0 || next >= log.exercises.length) { endLiveSession(); return; }
   liveSession.index = next;
   liveSession.until = 0;
+  persistLiveSession();
   renderLiveSession();
 }
 
@@ -874,6 +940,254 @@ async function deleteAccount() {
   setTimeout(() => { try { location.href = '/'; } catch (err) { /* ignore */ } }, 900);
 }
 
+/* ---------------- autoregulation ----------------
+   A planned weight goes stale the moment the body adapts. These helpers turn
+   the logged sets into an estimated one-rep max per session, then answer the
+   three questions that matter in the gym: is it going up, has it stalled,
+   and what should the next load be? */
+
+function e1rmOf(set) {
+  const weight = Number(set && set.weight) || 0;
+  const reps = Number(set && set.reps) || 0;
+  if (!(weight > 0) || !(reps > 0)) return 0;
+  return Math.round(weight * (1 + reps / 30) * 10) / 10;
+}
+
+function e1rmSeries(name) {
+  return exerciseSessions(name)
+    .map((session) => ({
+      key: session.key,
+      e1rm: Math.max(0, ...session.sets.map(e1rmOf)),
+      top: topOf(session.sets)
+    }))
+    .filter((point) => point.e1rm > 0);
+}
+
+function loadVerdict(name) {
+  const series = e1rmSeries(name);
+  if (!series.length) return { status: 'new', series, sessions: 0 };
+  const best = Math.max(...series.map((point) => point.e1rm));
+  const last = series[series.length - 1].e1rm;
+  const previous = series.length > 1 ? series[series.length - 2].e1rm : 0;
+  const recent = series.slice(-3);
+  const flat = recent.length >= 3
+    && Math.max(...recent.map((point) => point.e1rm)) <= Math.min(...recent.map((point) => point.e1rm)) * 1.02;
+
+  if (series.length < 2) return { status: 'new', series, sessions: series.length, best, last };
+  if (last > previous * 1.01) return { status: 'up', series, sessions: series.length, best, last };
+  if (flat) return { status: 'stall', series, sessions: series.length, best, last, deload: deloadFor(best) };
+  return { status: 'flat', series, sessions: series.length, best, last };
+}
+
+function deloadFor(e1rm) {
+  const target = Math.max(BAR_KG, (e1rm / 1.15) * 0.9);
+  return Math.round(target / 2.5) * 2.5;
+}
+
+function liftNames() {
+  const names = [];
+  (state.templates || []).forEach((template) => {
+    const first = (template.exercises || [])[0];
+    if (first && first.name && names.indexOf(first.name) < 0) names.push(first.name);
+  });
+  return names.slice(0, 4);
+}
+
+function loadCheckHtml() {
+  const rows = liftNames()
+    .map((name) => ({ name, verdict: loadVerdict(name) }))
+    .filter((row) => row.verdict.sessions > 0);
+  if (!rows.length) return '';
+
+  const lines = rows.map(({ name, verdict }) => {
+    const est = verdict.last ? `${verdict.last} kg e1RM` : 'no estimate yet';
+    const advice = verdict.status === 'up'
+      ? `ADD ${OVERLOAD_STEP} KG`
+      : verdict.status === 'stall'
+        ? `DELOAD TO ${verdict.deload} KG`
+        : verdict.status === 'new'
+          ? 'LOG ONE MORE SESSION'
+          : `HOLD ${verdict.best} KG UNTIL REPS CLIMB`;
+    const tone = verdict.status === 'up' ? 'is-good' : verdict.status === 'stall' ? 'is-warn' : '';
+    return `<li class="load-row">
+      <span class="load-name">${esc(name)}</span>
+      <span class="load-est">${esc(est)} · ${verdict.sessions} session${verdict.sessions === 1 ? '' : 's'}</span>
+      <em class="load-advice ${tone}">${advice}</em>
+    </li>`;
+  }).join('');
+
+  return `
+    <div class="section-head">
+      <h2>LOAD CHECK</h2>
+      <div class="line"></div>
+      <span class="hint">from your logged sets</span>
+    </div>
+    <div class="panel"><ul class="load-list">${lines}</ul>
+      <p class="panel-sub" style="margin:10px 0 0;line-height:1.6">Estimated from weight × reps (Epley). Three flat sessions in a row earn a deload, not more willpower.</p>
+    </div>`;
+}
+
+/* ---------------- plate & warm-up maths ---------------- */
+
+const BAR_KG = 20;
+const PLATE_SET = [25, 20, 15, 10, 5, 2.5, 1.25];
+
+function platesPerSide(target, bar = BAR_KG, plates = PLATE_SET) {
+  let left = (Number(target) || 0) - bar;
+  if (!(left > 0)) return { perSide: [], leftover: Math.round(Math.max(0, left) * 100) / 100, under: (Number(target) || 0) < bar };
+  left /= 2;
+  const perSide = [];
+  plates.forEach((plate) => {
+    while (left >= plate - 0.001) {
+      perSide.push(plate);
+      left -= plate;
+    }
+  });
+  return { perSide, leftover: Math.round(left * 100) / 100, under: false };
+}
+
+function plateLine(target) {
+  const { perSide, leftover, under } = platesPerSide(target);
+  if (under) return `BAR ${BAR_KG} KG · below bar weight`;
+  const load = perSide.length ? perSide.join(' + ') : 'bar only';
+  const tail = leftover > 0.01 ? ` · ${leftover} kg short` : '';
+  return `BAR ${BAR_KG} KG + ${load} per side${tail}`;
+}
+
+function warmupLadder(top) {
+  const target = Number(top) || 0;
+  if (!(target > BAR_KG)) return [];
+  return [0.4, 0.6, 0.8].map((pct, i) => ({
+    weight: Math.max(BAR_KG, Math.round((target * pct) / 2.5) * 2.5),
+    reps: [8, 5, 3][i]
+  })).filter((step, i, all) => i === 0 || step.weight > all[i - 1].weight);
+}
+
+function warmupHtml(top) {
+  const ladder = warmupLadder(top);
+  if (!ladder.length) return '';
+  return `<p class="plate-warmup">WARM UP: ${ladder.map((step) => `${step.weight} × ${step.reps}`).join(' → ')}</p>`;
+}
+
+/* ---------------- sharing a program ----------------
+   A split is the thing lifters actually ask each other for. The payload rides
+   in the URL fragment, so there is no server work and nothing to delete. */
+
+function encodeProgramCode(payload) {
+  const json = JSON.stringify(payload);
+  return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeProgramCode(code) {
+  const raw = String(code || '').trim().replace(/-/g, '+').replace(/_/g, '/');
+  const padded = raw + (raw.length % 4 ? '='.repeat(4 - (raw.length % 4)) : '');
+  return JSON.parse(decodeURIComponent(escape(atob(padded))));
+}
+
+function programPayload() {
+  return {
+    app: 'system-fitness',
+    kind: 'program',
+    version: 1,
+    templates: state.templates,
+    schedule: state.schedule,
+    weekly: state.goals.weekly
+  };
+}
+
+function programShareLink() {
+  const base = `${location.origin}${location.pathname}`;
+  return `${base}#program=${encodeProgramCode(programPayload())}`;
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    /* fall through to the prompt */
+  }
+  window.prompt('Copy this link:', text);
+  return false;
+}
+
+async function shareProgram() {
+  const copied = await copyText(programShareLink());
+  toast(copied ? 'Program link copied. Send it to anyone.' : 'Program link ready.', 'gold');
+}
+
+function importProgramCode(code) {
+  let payload;
+  try {
+    payload = decodeProgramCode(code);
+  } catch (err) {
+    toast('That program link is not readable.', 'danger');
+    return false;
+  }
+  if (!payload || payload.kind !== 'program' || !Array.isArray(payload.templates) || !payload.templates.length) {
+    toast('That is not a System program link.', 'danger');
+    return false;
+  }
+  const templates = payload.templates
+    .filter((tpl) => tpl && typeof tpl.name === 'string' && Array.isArray(tpl.exercises))
+    .map((tpl, i) => ({
+      id: `shared-${i}`,
+      name: String(tpl.name).slice(0, 40),
+      focus: String(tpl.focus || 'shared program').slice(0, 80),
+      exercises: tpl.exercises
+        .filter((ex) => ex && typeof ex.name === 'string')
+        .slice(0, 10)
+        .map((ex) => ({
+          name: String(ex.name).slice(0, 60),
+          sets: clampNum(ex.sets, 1, 10, 3),
+          reps: clampNum(ex.reps, 1, 50, 10),
+          weight: clampNum(ex.weight, 0, 500, 0)
+        }))
+    }));
+  if (!templates.length) { toast('That program has no usable workouts.', 'danger'); return false; }
+  if (!confirm(`Replace your ${state.templates.length} workouts with these ${templates.length}? History is kept.`)) return false;
+
+  state.templates = templates;
+  state.schedule = { 0: null, 1: null, 2: null, 3: null, 4: null, 5: null, 6: null };
+  const dows = DOWS_BY_DAYS[Math.min(6, Math.max(2, templates.length))] || [1, 3, 5];
+  dows.forEach((dow, i) => { state.schedule[dow] = templates[i % templates.length].id; });
+  state.goals.weekly = clampNum(payload.weekly, 1, 14, templates.length);
+  state.meta = { ...(state.meta || {}), programReady: true };
+  save();
+  renderAll();
+  toast('Shared program loaded. Your history is untouched.', 'gold');
+  return true;
+}
+
+function openProgramImport() {
+  openModal(`
+    <h2>IMPORT PROGRAM</h2>
+    <div class="sub">Paste a program link or code someone shared with you.</div>
+    <label class="field"><span class="lbl">LINK OR CODE</span>
+      <textarea rows="3" data-program-incoming placeholder="https://…/#program=…"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="program-import-save">IMPORT</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+function saveProgramImport() {
+  const raw = String($('[data-program-incoming]')?.value || '').trim();
+  const match = raw.match(/program=([A-Za-z0-9_-]+)/);
+  if (importProgramCode(match ? match[1] : raw)) closeModal();
+}
+
+function importProgramFromHash() {
+  const match = String(location.hash || '').match(/program=([A-Za-z0-9_-]+)/);
+  if (!match) return;
+  history.replaceState(null, '', location.pathname);
+  importProgramCode(match[1]);
+}
+
 /* ---------------- paint ---------------- */
 
 /* The views are rendered by app.js and nutrition.js; this adds its own blocks
@@ -894,8 +1208,12 @@ function renderTrainingExtras() {
         <span class="panel-sub">${restSeconds()}s rest</span>
       </div>
       <p class="panel-sub" style="margin:8px 0 0;line-height:1.6">One exercise at a time, a tap per set and a rest timer between them. Every set is recorded, so records and next-load suggestions build up.</p>
+      ${state.live && state.logs[state.live.key]
+        ? `<p class="panel-sub" style="margin:8px 0 0;line-height:1.6">A session started ${esc(agoLabel(state.live.key))} is still open — pick it up where you left off.</p>`
+        : ''}
       <div class="modal-actions" style="margin-top:12px;justify-content:flex-start">
-        <button class="btn primary" data-act="live-start" data-key="${todayKey()}">${ensureLog(todayKey()).exercises.length ? 'START SESSION' : 'PICK A WORKOUT FIRST'}</button>
+        ${state.live && state.logs[state.live.key] ? '<button class="btn primary" data-act="live-resume">RESUME SESSION</button>' : ''}
+        <button class="btn${state.live && state.logs[state.live.key] ? ' ghost' : ' primary'}" data-act="live-start" data-key="${todayKey()}">${ensureLog(todayKey()).exercises.length ? 'START SESSION' : 'PICK A WORKOUT FIRST'}</button>
       </div>`;
     if (quest && quest.parentNode) quest.parentNode.insertBefore(card, quest.nextSibling);
     else today.insertBefore(card, today.firstChild);
@@ -906,7 +1224,7 @@ function renderTrainingExtras() {
     progress.querySelectorAll('[data-training-block]').forEach((el) => el.remove());
     const wrap = document.createElement('div');
     wrap.setAttribute('data-training-block', '1');
-    wrap.innerHTML = `${targetsHtml()}${measuresHtml()}${weekReportHtml()}
+    wrap.innerHTML = `${loadCheckHtml()}${targetsHtml()}${measuresHtml()}${weekReportHtml()}
       <div class="section-head">
         <h2>PROGRAM</h2>
         <div class="line"></div>
@@ -916,6 +1234,8 @@ function renderTrainingExtras() {
         <p class="panel-sub" style="margin:0;line-height:1.6">Rebuild the split when your equipment, experience or available days change. The library and schedule are replaced; history is kept.</p>
         <div class="modal-actions" style="margin-top:12px;justify-content:flex-start">
           <button class="btn" data-act="rebuild-program">REBUILD PROGRAM</button>
+          <button class="btn ghost" data-act="program-share">SHARE PROGRAM</button>
+          <button class="btn ghost" data-act="program-import">IMPORT PROGRAM</button>
         </div>
       </div>`;
     progress.appendChild(wrap);
@@ -935,7 +1255,8 @@ document.addEventListener('click', (e) => {
   else if (act === 'sets-open') openSetLogger(key, index);
   else if (act === 'set-add') addSet(key, index);
   else if (act === 'set-rm') removeSet(key, index, Number(el.dataset.s));
-  else if (act === 'live-start') startLiveSession(todayKey());
+  else   if (act === 'live-start') startLiveSession(todayKey());
+  else if (act === 'live-resume') resumeLiveSession();
   else if (act === 'live-set') liveLogSet(key);
   else if (act === 'live-next') liveMove(1);
   else if (act === 'live-prev') liveMove(-1);
@@ -946,11 +1267,19 @@ document.addEventListener('click', (e) => {
   else if (act === 'rebuild-program') rebuildProgram();
   else if (act === 'program-confirm') confirmRebuildProgram();
   else if (act === 'delete-account') deleteAccount();
+  else if (act === 'program-share') shareProgram();
+  else if (act === 'program-import') openProgramImport();
+  else if (act === 'program-import-save') saveProgramImport();
 });
 
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-change]');
   if (!el) return;
+  if (el.dataset.change === 'set-weight') {
+    const line = document.querySelector('.plate-line');
+    if (line) line.textContent = plateLine(Number(el.value) || 0);
+    return;
+  }
   if (el.dataset.change === 'rest-sec') {
     state.meta = { ...(state.meta || {}), restSec: Number(el.value) || 90 };
     save();
@@ -968,6 +1297,10 @@ window.addEventListener('beforeunload', () => {
   if (liveSession) clearInterval(liveSession.timer);
 });
 
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && liveSession) requestWakeLock();
+});
+
 renderAll = (() => {
   const base = renderAll;
   return function renderAllWithTraining() {
@@ -975,4 +1308,23 @@ renderAll = (() => {
     try { renderTrainingExtras(); } catch (err) { console.error('[training] extras failed', err); }
   };
 })();
-renderAll();
+
+/* A session started in the last few hours is resumed automatically; an older
+   one is stale and is cleared so it never blocks a new session. */
+function maybeRestoreLive() {
+  const saved = state.live;
+  if (!saved || !saved.key) return;
+  const fresh = Date.now() - (Number(saved.startedAt) || 0) < 6 * 3600 * 1000;
+  if (saved.key === todayKey() && fresh && state.logs[saved.key]) resumeLiveSession();
+  else { state.live = null; save(); }
+}
+
+setTimeout(() => {
+  try { maybeRestoreLive(); } catch (err) { console.error('[training] resume failed', err); }
+}, 700);
+setTimeout(() => {
+  try { importProgramFromHash(); } catch (err) { console.error('[training] import failed', err); }
+}, 900);
+
+// Paint the extras once the shell exists (and never during a headless test).
+if (typeof document !== 'undefined' && document.getElementById('view-today')) renderAll();

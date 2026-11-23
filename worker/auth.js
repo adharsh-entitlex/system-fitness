@@ -143,18 +143,84 @@ export function publicUser(row) {
     name: row.name || row.email.split('@')[0],
     avatar: row.avatar || null,
     hasPassword: !!row.pass_hash,
-    google: !!row.google_sub
+    google: !!row.google_sub,
+    verified: Number(row.email_verified) === 1
   };
 }
 
-export async function createSession(env, userId) {
+export async function createSession(env, userId, userAgent) {
   const token = randomToken();
   const id = await sha256Hex(token);
   const expiresAt = Date.now() + SESSION_MS;
-  await env.DB.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
-    .bind(id, userId, expiresAt, new Date().toISOString())
+  await env.DB.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at, user_agent) VALUES (?, ?, ?, ?, ?)')
+    .bind(id, userId, expiresAt, new Date().toISOString(), String(userAgent || '').slice(0, 160))
     .run();
   return token;
+}
+
+/* Every live session for an account, for the "signed-in devices" list. */
+export async function listSessions(env, userId) {
+  const rows = await env.DB.prepare(
+    'SELECT id, created_at, expires_at, user_agent FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC'
+  )
+    .bind(userId, Date.now())
+    .all();
+  return rows.results || [];
+}
+
+/* Sign out everywhere. `keepId` is the hash of the caller's own token, so the
+   device asking stays signed in while every other one is dropped. */
+export async function destroyOtherSessions(env, userId, keepId) {
+  if (keepId) {
+    await env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').bind(userId, keepId).run();
+  } else {
+    await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(userId).run();
+  }
+}
+
+export async function destroyAllSessions(env, userId) {
+  await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(userId).run();
+}
+
+/* ---------------- one-shot tokens (verify email, reset password) ----------------
+   Only the hash is stored, exactly like a session token, so a database read
+   cannot be replayed as a reset link. */
+
+export async function issueToken(env, userId, kind, ttlMs) {
+  const raw = randomToken(24);
+  await env.DB.prepare('INSERT INTO auth_tokens (id, user_id, kind, expires_at, used_at) VALUES (?, ?, ?, ?, NULL)')
+    .bind(await sha256Hex(raw), userId, kind, Date.now() + ttlMs)
+    .run();
+  return raw;
+}
+
+export async function consumeToken(env, raw, kind) {
+  if (!raw) return null;
+  const id = await sha256Hex(String(raw));
+  const row = await env.DB.prepare('SELECT * FROM auth_tokens WHERE id = ? AND kind = ?').bind(id, kind).first();
+  if (!row) return null;
+  if (Number(row.expires_at) < Date.now()) return null;
+  if (row.used_at) return null;
+  await env.DB.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ?').bind(new Date().toISOString(), id).run();
+  return row.user_id;
+}
+
+export async function markEmailVerified(env, userId) {
+  await env.DB.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').bind(userId).run();
+}
+
+export async function setPassword(env, userId, password) {
+  const creds = await hashPassword(password);
+  await env.DB.prepare('UPDATE users SET pass_salt = ?, pass_hash = ? WHERE id = ?')
+    .bind(creds.salt, creds.hash, userId)
+    .run();
+}
+
+/* The hash of the session cookie a request arrived with, so the caller can be
+   left signed in while the others are revoked. */
+export async function sessionIdFrom(request) {
+  const token = readCookie(request, SESSION_COOKIE);
+  return token ? sha256Hex(token) : null;
 }
 
 export async function destroySession(request, env) {

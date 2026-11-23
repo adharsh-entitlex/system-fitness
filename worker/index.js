@@ -29,31 +29,47 @@
 
 import {
   clearCookie,
+  consumeToken,
   createSession,
   createUser,
   currentUser,
+  destroyAllSessions,
+  destroyOtherSessions,
   destroySession,
   emailProblem,
   findUserByEmail,
   googleAuthUrl,
   googleConfigured,
   googleProfile,
+  issueToken,
   linkGoogle,
+  listSessions,
+  markEmailVerified,
   normalizeEmail,
   oauthCookie,
   OAUTH_COOKIE,
   passwordProblem,
   readCookie,
   sessionCookie,
+  sessionIdFrom,
+  setPassword,
   verifyPassword
 } from './auth.js';
 import { pushConfigured, pushUser } from './push.js';
 import { aiFailureHint, cleanMeals, requestAi } from './ai.js';
+import { mailConfigured, resetMessage, sendMail, verifyMessage } from './mail.js';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' };
 const PUBLIC_JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
 const MAX_BODY = 4 * 1024 * 1024;
 const AI_DAILY_LIMIT = 40;
+const AI_IP_DAILY_LIMIT = 60;
+const SESSION_SECONDS = 30 * 24 * 3600;
+
+/* Injected by scripts/build-worker.mjs. A deployment that cannot say which
+   commit it is running is how a stale build stayed live for two days. */
+const COMMIT = typeof __SYSTEM_COMMIT__ === 'string' ? __SYSTEM_COMMIT__ : 'dev';
+const BUILT_AT = typeof __SYSTEM_BUILT__ === 'string' ? __SYSTEM_BUILT__ : '';
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -100,6 +116,19 @@ const SCHEMA = [
      day TEXT NOT NULL,
      count INTEGER NOT NULL,
      PRIMARY KEY (user_id, day)
+   )`,
+  `CREATE TABLE IF NOT EXISTS auth_tokens (
+     id TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     expires_at INTEGER NOT NULL,
+     used_at TEXT
+   )`,
+  `CREATE INDEX IF NOT EXISTS auth_tokens_user ON auth_tokens(user_id)`,
+  `CREATE TABLE IF NOT EXISTS throttle (
+     key TEXT PRIMARY KEY,
+     count INTEGER NOT NULL,
+     reset_at INTEGER NOT NULL
    )`
 ];
 
@@ -107,7 +136,9 @@ const SCHEMA = [
    so a duplicate is expected on an up-to-date database and is ignored. */
 const MIGRATIONS = [
   ['push_prefs', 'reminder_hour', 'INTEGER DEFAULT 20'],
-  ['push_prefs', 'last_streak_at', 'INTEGER DEFAULT 0']
+  ['push_prefs', 'last_streak_at', 'INTEGER DEFAULT 0'],
+  ['users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0'],
+  ['sessions', 'user_agent', 'TEXT']
 ];
 
 let schemaReady = false;
@@ -151,6 +182,38 @@ function sameOrigin(request, env) {
   if (!origin) return true; // same-origin form posts and curl rarely send it
   const allowed = new Set([appOrigin(request, env), new URL(request.url).origin]);
   return allowed.has(origin.replace(/\/$/, ''));
+}
+
+/* ---------------- abuse guard ----------------
+   A fixed window counter in D1. Password hashing is deliberately expensive,
+   so an unthrottled login loop is a CPU fire on the free plan, and the AI cap
+   is per account, so unlimited accounts would mean unlimited spend. */
+
+function clientIp(request) {
+  return String(request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'local')
+    .split(',')[0]
+    .trim();
+}
+
+async function hitLimit(env, key, limit, windowMs) {
+  const now = Date.now();
+  const row = await env.DB.prepare('SELECT count, reset_at FROM throttle WHERE key = ?').bind(key).first();
+  if (!row || now > Number(row.reset_at)) {
+    await env.DB.prepare(
+      `INSERT INTO throttle (key, count, reset_at) VALUES (?, 1, ?)
+       ON CONFLICT(key) DO UPDATE SET count = 1, reset_at = excluded.reset_at`
+    )
+      .bind(key, now + windowMs)
+      .run();
+    return { ok: true, left: limit - 1 };
+  }
+  if (Number(row.count) >= limit) return { ok: false, retryAt: Number(row.reset_at) };
+  await env.DB.prepare('UPDATE throttle SET count = count + 1 WHERE key = ?').bind(key).run();
+  return { ok: true, left: limit - Number(row.count) - 1 };
+}
+
+async function clearLimit(env, key) {
+  await env.DB.prepare('DELETE FROM throttle WHERE key = ?').bind(key).run();
 }
 
 async function readBody(request) {
@@ -200,14 +263,89 @@ async function handleSignup(request, env) {
   const badPassword = passwordProblem(password);
   if (badPassword) return json({ error: badPassword }, 400);
 
+  const gate = await hitLimit(env, `signup:${clientIp(request)}`, 8, 3600 * 1000);
+  if (!gate.ok) return json({ error: 'Too many accounts from this connection. Try again in a little while.' }, 429);
+
   if (await findUserByEmail(env, email)) {
     return json({ error: 'An account with that email already exists. Sign in instead.' }, 409);
   }
 
   const user = await createUser(env, { email, name, password });
   await adoptLegacyRecord(env, user.id);
-  const token = await createSession(env, user.id);
-  return json({ user }, 200, { 'Set-Cookie': sessionCookie(env, token, 30 * 24 * 3600) });
+  const verify = await sendVerification(env, request, user);
+  const token = await createSession(env, user.id, request.headers.get('user-agent'));
+  return json({ user, verify }, 200, { 'Set-Cookie': sessionCookie(env, token, SESSION_SECONDS) });
+}
+
+/* A verification mail is best-effort: without a mail key the account still
+   works, and the client says so instead of blocking sign-in. */
+async function sendVerification(env, request, user) {
+  if (!mailConfigured(env)) return 'unconfigured';
+  const origin = appOrigin(request, env);
+  const token = await issueToken(env, user.id, 'verify', 24 * 3600 * 1000);
+  const link = `${origin}/api/auth/verify?token=${encodeURIComponent(token)}`;
+  const result = await sendMail(env, { to: user.email, ...verifyMessage(origin, link) });
+  return result.sent ? 'sent' : 'failed';
+}
+
+/* Email ownership: the link marks the address verified, then drops the hunter
+   back on the sign-in screen with an explanation. */
+async function handleVerifyEmail(request, env, url) {
+  const userId = await consumeToken(env, url.searchParams.get('token'), 'verify');
+  if (!userId) return redirect('/?auth=verify-failed');
+  await markEmailVerified(env, userId);
+  return redirect('/?auth=email-verified');
+}
+
+/* "Forgot password" always answers the same way, so the endpoint cannot be
+   used to discover which addresses have accounts. */
+async function handlePasswordRequest(request, env) {
+  const { body, error, status } = await readBody(request);
+  if (error) return json({ error }, status);
+  const email = normalizeEmail(body.email);
+  const gate = await hitLimit(env, `reset:${clientIp(request)}`, 6, 3600 * 1000);
+  if (!gate.ok) return json({ error: 'Too many reset requests. Try again later.' }, 429);
+
+  const row = email ? await findUserByEmail(env, email) : null;
+  if (row && row.pass_hash) {
+    if (mailConfigured(env)) {
+      const origin = appOrigin(request, env);
+      const token = await issueToken(env, row.id, 'reset', 30 * 60 * 1000);
+      const link = `${origin}/?reset=${encodeURIComponent(token)}`;
+      await sendMail(env, { to: row.email, ...resetMessage(origin, link) });
+    }
+  }
+  return json({ ok: true, mail: mailConfigured(env) ? 'sent' : 'unconfigured' });
+}
+
+async function handlePasswordReset(request, env) {
+  const { body, error, status } = await readBody(request);
+  if (error) return json({ error }, status);
+  const password = String(body.password || '');
+  const bad = passwordProblem(password);
+  if (bad) return json({ error: bad }, 400);
+
+  const gate = await hitLimit(env, `reset-use:${clientIp(request)}`, 10, 3600 * 1000);
+  if (!gate.ok) return json({ error: 'Too many attempts. Try again later.' }, 429);
+
+  const userId = await consumeToken(env, body.token, 'reset');
+  if (!userId) return json({ error: 'That reset link has expired. Ask for a new one.' }, 400);
+
+  const row = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
+  if (!row) return json({ error: 'That account no longer exists.' }, 400);
+
+  await setPassword(env, userId, password);
+  // Proving inbox access also proves the address, and every old session is
+  // dropped: a stolen cookie must not survive a password reset.
+  await markEmailVerified(env, userId);
+  await destroyAllSessions(env, userId);
+  const token = await createSession(env, userId, request.headers.get('user-agent'));
+  const fresh = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
+  return json(
+    { user: { id: fresh.id, email: fresh.email, name: fresh.name, avatar: fresh.avatar || null, hasPassword: true, google: !!fresh.google_sub, verified: true } },
+    200,
+    { 'Set-Cookie': sessionCookie(env, token, SESSION_SECONDS) }
+  );
 }
 
 async function handleLogin(request, env) {
@@ -218,6 +356,12 @@ async function handleLogin(request, env) {
   const password = String(body.password || '');
   if (!email || !password) return json({ error: 'Enter your email and password.' }, 400);
 
+  const attemptKey = `login:${clientIp(request)}:${email.slice(0, 80)}`;
+  const gate = await hitLimit(env, attemptKey, 10, 15 * 60 * 1000);
+  if (!gate.ok) {
+    return json({ error: 'Too many attempts. Wait 15 minutes, or reset your password.' }, 429);
+  }
+
   const row = await findUserByEmail(env, email);
   if (!row || !row.pass_hash) {
     return json({ error: 'No account matches that email and password.' }, 401);
@@ -226,7 +370,9 @@ async function handleLogin(request, env) {
     return json({ error: 'No account matches that email and password.' }, 401);
   }
 
-  const token = await createSession(env, row.id);
+  // A good password clears the counter, so one typo does not linger.
+  await clearLimit(env, attemptKey);
+  const token = await createSession(env, row.id, request.headers.get('user-agent'));
   return json(
     { user: { id: row.id, email: row.email, name: row.name, avatar: row.avatar, hasPassword: true, google: !!row.google_sub } },
     200,
@@ -269,6 +415,9 @@ async function handleGoogleCallback(request, env, url) {
   try {
     const profile = await googleProfile(env, code, appOrigin(request, env));
 
+    // An unverified Google address proves nothing about who is asking.
+    if (!profile.verified) return redirect('/?auth=google-unverified');
+
     if (intent === 'link') {
       const me = await currentUser(request, env);
       if (!me || me.id !== linkUserId) return redirect('/?auth=link-session');
@@ -287,11 +436,17 @@ async function handleGoogleCallback(request, env, url) {
         avatar: profile.avatar
       });
       await adoptLegacyRecord(env, created.id);
+      await markEmailVerified(env, created.id);
       row = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(created.id).first();
     } else if (!row.google_sub) {
+      // Never attach Google to a password account from a public flow: anyone
+      // can pre-register someone else's address, and auto-linking would hand
+      // them the victim's sessions. The owner links it from Settings instead.
+      if (row.pass_hash) return redirect('/?auth=google-link-required');
       await linkGoogle(env, row.id, profile.sub, profile.avatar);
     }
-    const token = await createSession(env, row.id);
+    await markEmailVerified(env, row.id);
+    const token = await createSession(env, row.id, request.headers.get('user-agent'));
     return redirect('/', {
       'Set-Cookie': [sessionCookie(env, token, 30 * 24 * 3600), clearCookie(env, OAUTH_COOKIE)]
     });
@@ -381,6 +536,9 @@ async function handleAiSuggest(request, env, user) {
   if (!pantry.length) {
     return json({ error: 'Add a few pantry ingredients first, then ask for a plan.' }, 400);
   }
+
+  const ipGate = await hitLimit(env, `ai:${clientIp(request)}`, AI_IP_DAILY_LIMIT, 24 * 3600 * 1000);
+  if (!ipGate.ok) return json({ error: 'The planner is busy from this connection. Try again later.' }, 429);
 
   if (!env.OPENAI_API_KEY) {
     return json(
@@ -567,6 +725,7 @@ async function handleDeleteAccount(request, env, user) {
   await db.prepare('DELETE FROM ai_usage WHERE user_id = ?').bind(user.id).run();
   await db.prepare('DELETE FROM records WHERE user_id = ?').bind(user.id).run();
   await db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id).run();
+  await db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').bind(user.id).run();
   await db.prepare('DELETE FROM users WHERE id = ?').bind(user.id).run();
   return json({ ok: true }, 200, { 'Set-Cookie': clearCookie(env, 'sys_session') });
 }
@@ -704,14 +863,6 @@ async function handle(request, env) {
   if (pathname === '/.well-known/assetlinks.json') return assetLinks(env);
   if (pathname === '/api/health') return publicJson({ ok: true });
 
-  if (pathname === '/api/auth/config') {
-    return publicJson({
-      google: googleConfigured(env),
-      email: true,
-      push: pushConfigured(env)
-    });
-  }
-
   // Signed out is a normal answer here, not an error: the client asks on boot.
   if (pathname === '/api/auth/session') {
     await ensureSchema(env.DB);
@@ -721,12 +872,29 @@ async function handle(request, env) {
   if (pathname === '/api/auth/google/start') return handleGoogleStart(request, env, url);
   if (pathname === '/api/auth/google/callback') return handleGoogleCallback(request, env, url);
 
-  if (pathname === '/api/auth/signup' || pathname === '/api/auth/login' || pathname === '/api/auth/logout') {
+  if (pathname === '/api/auth/verify') return handleVerifyEmail(request, env, url);
+  if (pathname === '/api/version') {
+    return publicJson({ app: 'system-fitness', commit: COMMIT, builtAt: BUILT_AT });
+  }
+
+  if (pathname === '/api/auth/config') return publicJson({
+    google: googleConfigured(env),
+    email: true,
+    mail: mailConfigured(env),
+    push: pushConfigured(env)
+  });
+
+  const authActions = {
+    '/api/auth/signup': handleSignup,
+    '/api/auth/login': handleLogin,
+    '/api/auth/logout': handleLogout,
+    '/api/auth/password/request': handlePasswordRequest,
+    '/api/auth/password/reset': handlePasswordReset
+  };
+  if (authActions[pathname]) {
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
     if (!sameOrigin(request, env)) return json({ error: 'cross-origin request blocked' }, 403);
-    if (pathname === '/api/auth/signup') return handleSignup(request, env);
-    if (pathname === '/api/auth/login') return handleLogin(request, env);
-    return handleLogout(request, env);
+    return authActions[pathname](request, env);
   }
 
   if (pathname.startsWith('/api/')) {
@@ -739,6 +907,32 @@ async function handle(request, env) {
     }
 
     if (pathname === '/api/state') return handleState(request, env, user);
+    if (pathname === '/api/auth/verify/request') {
+      if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+      const row = await env.DB.prepare('SELECT email_verified FROM users WHERE id = ?').bind(user.id).first();
+      if (row && Number(row.email_verified) === 1) return json({ ok: true, already: true });
+      const gate = await hitLimit(env, `verify:${user.id}`, 5, 3600 * 1000);
+      if (!gate.ok) return json({ error: 'Too many confirmations requested. Try again later.' }, 429);
+      const state = await sendVerification(env, request, user);
+      if (state === 'unconfigured') return json({ error: 'Email is not configured on this deployment.' }, 503);
+      return json({ ok: state === 'sent', state });
+    }
+    if (pathname === '/api/auth/sessions') {
+      const rows = await listSessions(env, user.id);
+      const currentId = await sessionIdFrom(request);
+      return json({
+        sessions: rows.map((row) => ({
+          created: row.created_at,
+          userAgent: row.user_agent || '',
+          current: row.id === currentId
+        }))
+      });
+    }
+    if (pathname === '/api/auth/sessions/revoke-all') {
+      if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+      await destroyOtherSessions(env, user.id, await sessionIdFrom(request));
+      return json({ ok: true });
+    }
     if (pathname === '/api/account/delete') {
       if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
       return handleDeleteAccount(request, env, user);
@@ -776,8 +970,13 @@ export default {
     try {
       await ensureSchema(env.DB);
       if (!pushConfigured(env)) return;
-      const rows = await env.DB.prepare('SELECT * FROM push_prefs WHERE enabled = 1').all();
       const now = Date.now();
+      // Expired sessions and one-shot tokens are dead weight; the cron is the
+      // only place that can see every account at once.
+      await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(now).run();
+      await env.DB.prepare('DELETE FROM auth_tokens WHERE expires_at < ?').bind(now).run();
+      await env.DB.prepare('DELETE FROM throttle WHERE reset_at < ?').bind(now - 86400000).run();
+      const rows = await env.DB.prepare('SELECT * FROM push_prefs WHERE enabled = 1').all();
       for (const prefs of rows.results || []) {
         const everyMs = Math.max(15, Number(prefs.every_min) || 90) * 60000;
         if (now - Number(prefs.last_sent_at || 0) < everyMs) continue;

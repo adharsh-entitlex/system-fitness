@@ -68,6 +68,13 @@ function defaultState() {
     pantry: DEFAULT_PANTRY.slice(),
     nutrition: { kcal: 2200, protein: 140, manual: false },
     measures: {},
+    // Days deliberately taken off (illness, travel). They are neutral in the
+    // streak instead of breaking it.
+    restDays: {},
+    // In-progress live session, so a reload or a killed tab resumes it.
+    live: null,
+    // Monthly roll-up of days older than the detail window.
+    archive: {},
     ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', detail: '', busy: false, remaining: null },
     reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0, hour: 20 },
     // Milestone ids already unlocked, and the daily directives already claimed.
@@ -99,6 +106,9 @@ function normalizeState(parsed) {
     profile: { ...base.profile, ...(src.profile || {}) },
     weights: src.weights && typeof src.weights === 'object' ? src.weights : {},
     measures: src.measures && typeof src.measures === 'object' ? src.measures : {},
+    restDays: src.restDays && typeof src.restDays === 'object' ? src.restDays : {},
+    archive: src.archive && typeof src.archive === 'object' ? src.archive : {},
+    live: src.live && typeof src.live === 'object' ? src.live : null,
     reminders: { ...base.reminders, ...(src.reminders || {}) },
     schedule: { ...base.schedule, ...(src.schedule || {}) },
     templates: Array.isArray(src.templates) && src.templates.length ? src.templates : base.templates,
@@ -129,6 +139,7 @@ function save() {
   // Stamped before serialising so the timestamp handed to the backend matches
   // exactly what this browser has cached.
   state.meta = { ...(state.meta || {}), updatedAt: Date.now() };
+  maybePrune();
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch (err) {
@@ -138,6 +149,62 @@ function save() {
 }
 
 let state = loadState();
+
+/* ---------------- keeping the record small
+   The account is one JSON blob in localStorage and one D1 row, so it can
+   never grow without a ceiling. Detail older than two years rolls into a
+   monthly summary: sessions, volume and sets survive, individual sets do
+   not. PRs live in the logs that remain, and history keeps reading fine. */
+
+const HISTORY_DAYS = 730;
+
+function dayLoad(log) {
+  let load = 0;
+  ((log && log.exercises) || []).forEach((ex) => {
+    (Array.isArray(ex.log) ? ex.log : []).forEach((set) => {
+      load += (Number(set.weight) || 0) * (Number(set.reps) || 0);
+    });
+  });
+  return load;
+}
+
+function pruneHistory() {
+  const cutoff = keyOf(addDays(new Date(), -HISTORY_DAYS));
+  state.archive = state.archive && typeof state.archive === 'object' ? state.archive : {};
+  let months = 0;
+  Object.keys(state.logs || {}).forEach((key) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key) || key >= cutoff) return;
+    const log = state.logs[key];
+    const month = key.slice(0, 7);
+    const bucket = state.archive[month] || (state.archive[month] = { days: 0, sessions: 0, load: 0, sets: 0 });
+    bucket.days += 1;
+    if (log && log.status === 'completed') bucket.sessions += 1;
+    bucket.load += dayLoad(log);
+    ((log && log.exercises) || []).forEach((ex) => { bucket.sets += Array.isArray(ex.log) ? ex.log.length : 0; });
+    delete state.logs[key];
+    months += 1;
+  });
+  ['water', 'waterBonus', 'weights', 'measures', 'meals'].forEach((field) => {
+    Object.keys(state[field] || {}).forEach((key) => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(key) && key < cutoff) delete state[field][key];
+    });
+  });
+  return months;
+}
+
+function maybePrune() {
+  if ((state.meta || {}).prunedAt === todayKey()) return;
+  const removed = pruneHistory();
+  state.meta = { ...(state.meta || {}), prunedAt: todayKey() };
+  if (removed && typeof toast === 'function') {
+    toast(`Archived ${removed} old day${removed === 1 ? '' : 's'} — records and monthly totals are kept.`);
+  }
+}
+
+function storagePercent() {
+  const kb = Number(storageSizeKb()) || 0;
+  return { kb, near: kb >= 2500 };
+}
 
 /* ---------------- backup & restore ----------------
    History lives only in this browser's localStorage, which disappears when
@@ -288,6 +355,7 @@ function computeStreak() {
     const log = state.logs[key];
     if (log && log.status === 'completed') { streak++; continue; }
     if (i === 0) continue; // today never breaks the streak
+    if (state.restDays && state.restDays[key]) continue; // taken on purpose
     const scheduled = state.schedule[date.getDay()];
     if (!scheduled) continue; // rest day, neutral
     return streak;
@@ -1572,7 +1640,35 @@ function setTodayTemplate(id) {
 
 /* ---------------- settings ---------------- */
 
+function markRestDay() {
+  const key = todayKey();
+  if (state.restDays[key]) {
+    delete state.restDays[key];
+    save();
+    renderAll();
+    toast('Today counts as a training day again.');
+    return;
+  }
+  if (!confirm('Mark today as a rest day? It stays neutral in the streak instead of breaking it.')) return;
+  state.restDays[key] = true;
+  save();
+  renderAll();
+  toast('Rest day logged. The streak keeps its count.', 'gold');
+}
+
+/* iOS only delivers Web Push to an installed app, so say so instead of
+   leaving a button that silently does nothing. */
+function pushPlatformHint() {
+  const ua = String(navigator.userAgent || '');
+  if (!/iPad|iPhone|iPod/.test(ua)) return '';
+  const standalone = !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  return standalone
+    ? 'Installed on iOS, so notifications work on iOS 16.4 or newer.'
+    : 'On iOS, notifications only work in the installed app (Share → Add to Home Screen) on iOS 16.4+; until then in-app reminders still fire.';
+}
+
 function openSettings() {
+  const store = storagePercent();
   const perm = notifySupported() ? Notification.permission : 'unsupported';
   const permLabel = perm === 'granted' ? 'ALERTS ON' : perm === 'denied' ? 'BLOCKED' : perm === 'unsupported' ? 'UNSUPPORTED' : 'ENABLE ALERTS';
   const every = state.reminders.everyMin;
@@ -1627,7 +1723,9 @@ function openSettings() {
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
         This browser caches your history under <code>${STORE_KEY}</code> (${storageSizeKb()} KB).
         The server keeps the durable copy — export a backup file now and then as well.
+        ${Object.keys(state.archive || {}).length ? `Days older than ${Math.round(HISTORY_DAYS / 365)} years are rolled into ${Object.keys(state.archive).length} monthly summaries.` : ''}
       </p>
+      ${store.near ? `<p class="panel-sub warn" style="margin:6px 0 0;font-size:12.5px;line-height:1.6">This record is close to the browser storage limit (${store.kb} KB). Export a backup, then remove old days from this device — the server copy still has them.</p>` : ''}
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="export-backup">EXPORT BACKUP</button>
         <button class="btn ghost" data-act="import-backup">IMPORT BACKUP</button>
@@ -1638,11 +1736,23 @@ function openSettings() {
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
         <span id="settingsAccount">${esc(typeof authAccountLabel === 'function' ? authAccountLabel() : 'Not signed in.')}</span>
       </p>
-      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start;flex-wrap:wrap">
         ${account
           ? '<button class="btn ghost" data-act="auth-signout">SIGN OUT</button>'
           : '<button class="btn" data-act="auth-open">SIGN IN OR CREATE ACCOUNT</button>'}
+        ${account ? '<button class="btn ghost" data-act="account-devices">SIGNED-IN DEVICES</button>' : ''}
+        ${account && !account.verified ? '<button class="btn ghost" data-act="account-verify">CONFIRM EMAIL</button>' : ''}
+        ${account ? '' : '<button class="btn ghost" data-act="account-forgot">FORGOT PASSWORD</button>'}
         ${account ? '<button class="btn danger" data-act="delete-account">DELETE ACCOUNT</button>' : ''}
+      </div>
+      ${account ? `<p class="panel-sub" style="margin:8px 0 0;font-size:12px;line-height:1.6">${account.verified ? 'Email confirmed.' : 'Email not confirmed yet — confirm it so password recovery and Google linking stay safe.'}</p>` : ''}
+
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">STREAK INSURANCE</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        Ill or travelling? Mark the day off instead of letting a 90-day run fall to zero. Rest days count as neutral, not missed.
+      </p>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn" data-act="rest-day">${state.restDays[todayKey()] ? 'UNDO TODAY\u2019S REST DAY' : 'MARK TODAY AS REST'}</button>
       </div>
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">GOOGLE ACCOUNT</h2><div class="line"></div></div>
@@ -1682,6 +1792,7 @@ function openSettings() {
       <p class="panel-sub" style="margin:6px 0 0;font-size:12px">
         Device notifications are delivered by the server, so they arrive even when this app is closed.
       </p>
+      ${pushPlatformHint() ? `<p class="panel-sub" style="margin:6px 0 0;font-size:12px;line-height:1.6">${esc(pushPlatformHint())}</p>` : ''}
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="push-enable">ENABLE ON THIS DEVICE</button>
         <button class="btn ghost" data-act="push-test">SEND TEST</button>
@@ -2055,6 +2166,7 @@ document.addEventListener('click', async (e) => {
     case 'save-profile': saveProfile(); break;
     case 'profile-later': closeModal(); maybeStartTour(); break;
     case 'log-weight': logWeight(); break;
+    case 'rest-day': markRestDay(); break;
     case 'export-backup': exportBackup(); break;
     case 'import-backup': {
       const input = $('[data-backup-file]');

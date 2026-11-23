@@ -69,6 +69,8 @@ function makeContext() {
   vm.runInContext(read('foods.js'), ctx, { filename: 'foods.js' });
   const app = read('app.js').split('/* ---------------- boot ---------------- */')[0];
   vm.runInContext(app, ctx, { filename: 'app.js' });
+  vm.runInContext(read('merge.js'), ctx, { filename: 'merge.js' });
+  vm.runInContext(read('training.js'), ctx, { filename: 'training.js' });
   return ctx;
 }
 
@@ -210,6 +212,100 @@ check('a rejected key is named as a key problem, not an outage', () => {
   assert.match(hint, /rejected/);
   assert.match(hint, /api\.openai\.com/);
   assert.match(hint, /replace the secret/);
+});
+
+/* ---------------- conflict merge ---------------- */
+
+check('merging two devices keeps the sets from both', () => {
+  const out = run(`(() => {
+    const mine = defaultState();
+    mine.meta.updatedAt = 2000;
+    mine.logs[todayKey()] = { status: 'completed', templateId: 'push', exercises: [
+      { name: 'Bench Press', sets: 3, reps: 8, weight: 60, log: [{ reps: 8, weight: 60 }] }
+    ] };
+    const theirs = defaultState();
+    theirs.meta.updatedAt = 1000;
+    theirs.logs[todayKey()] = { status: 'pending', templateId: 'push', exercises: [
+      { name: 'Bench Press', sets: 3, reps: 8, weight: 62.5, log: [{ reps: 6, weight: 62.5 }] }
+    ] };
+    const merged = mergeStates(mine, theirs);
+    return {
+      sets: merged.logs[todayKey()].exercises[0].log.length,
+      status: merged.logs[todayKey()].status,
+      water: merged.water[todayKey()] || 0
+    };
+  })()`);
+  assert.equal(out.sets, 2);
+  assert.equal(out.status, 'completed');
+});
+
+check('merging keeps the larger water total and both logged days', () => {
+  const out = run(`(() => {
+    const mine = defaultState();
+    mine.meta.updatedAt = 5000;
+    mine.water[todayKey()] = 1000;
+    mine.logs[keyOf(addDays(new Date(), -1))] = { status: 'completed', exercises: [] };
+    const theirs = defaultState();
+    theirs.meta.updatedAt = 4000;
+    theirs.water[todayKey()] = 2500;
+    theirs.logs[keyOf(addDays(new Date(), -2))] = { status: 'completed', exercises: [] };
+    const merged = mergeStates(mine, theirs);
+    return { water: merged.water[todayKey()], days: Object.keys(merged.logs).length };
+  })()`);
+  assert.equal(out.water, 2500);
+  assert.equal(out.days, 2);
+});
+
+/* ---------------- autoregulation and plates ---------------- */
+
+check('estimated one-rep max follows weight and reps', () => {
+  assert.equal(run('e1rmOf({ weight: 100, reps: 5 })'), 116.7);
+  assert.equal(run('e1rmOf({ weight: 0, reps: 10 })'), 0);
+});
+
+check('plates split evenly per side', () => {
+  const out = run('platesPerSide(100)');
+  assert.deepEqual(Array.from(out.perSide), [25, 15]);
+  assert.equal(out.leftover, 0);
+  assert.equal(run('platesPerSide(20).perSide.length'), 0);
+  assert.equal(run('platesPerSide(10).under'), true);
+});
+
+check('warm-up ladder rises to the working weight', () => {
+  const ladder = run('warmupLadder(100)');
+  assert.deepEqual(Array.from(ladder.map((step) => step.weight)), [40, 60, 80]);
+  assert.deepEqual(Array.from(ladder.map((step) => step.reps)), [8, 5, 3]);
+});
+
+/* ---------------- retention, streaks and archiving ---------------- */
+
+check('a marked rest day keeps the streak alive', () => {
+  const streak = run(`(() => {
+    state.logs = {};
+    state.restDays = {};
+    state.schedule = { 0: 'x', 1: 'x', 2: 'x', 3: 'x', 4: 'x', 5: 'x', 6: 'x' };
+    state.logs[keyOf(addDays(new Date(), -1))] = { status: 'completed', exercises: [] };
+    state.logs[keyOf(addDays(new Date(), -2))] = { status: 'completed', exercises: [] };
+    state.restDays[keyOf(addDays(new Date(), -3))] = true;
+    return computeStreak();
+  })()`);
+  assert.equal(streak, 2);
+});
+
+check('old detail rolls into a monthly summary', () => {
+  const out = run(`(() => {
+    state = defaultState();
+    state.logs['2020-01-05'] = { status: 'completed', templateId: 'push', exercises: [
+      { name: 'Bench Press', sets: 3, reps: 8, weight: 60, log: [{ reps: 8, weight: 60 }] }
+    ] };
+    state.water['2020-01-05'] = 2000;
+    const removed = pruneHistory();
+    return { removed, archive: state.archive['2020-01'], water: state.water['2020-01-05'] };
+  })()`);
+  assert.equal(out.removed, 1);
+  assert.equal(out.archive.sessions, 1);
+  assert.equal(out.archive.load, 480);
+  assert.equal(out.water, undefined);
 });
 
 /* ---------------- report ---------------- */
