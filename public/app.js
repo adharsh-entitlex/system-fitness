@@ -67,7 +67,7 @@ function defaultState() {
     meals: {},
     pantry: DEFAULT_PANTRY.slice(),
     nutrition: { kcal: 2200, protein: 140 },
-    ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', busy: false, remaining: null },
+    ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', detail: '', busy: false, remaining: null },
     reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 },
     // Milestone ids already unlocked, and the daily directives already claimed.
     achievements: { unlocked: {} },

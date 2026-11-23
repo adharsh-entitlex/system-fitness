@@ -48,7 +48,7 @@ import {
   verifyPassword
 } from './auth.js';
 import { pushConfigured, pushUser } from './push.js';
-import { cleanMeals, requestAi } from './ai.js';
+import { aiFailureHint, cleanMeals, requestAi } from './ai.js';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' };
 const PUBLIC_JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
@@ -425,6 +425,7 @@ async function handleAiSuggest(request, env, user) {
     return json(
       {
         error: 'AI request failed for every configured endpoint.',
+        hint: aiFailureHint(result),
         detail: result.detail
       },
       502

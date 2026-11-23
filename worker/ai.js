@@ -95,7 +95,7 @@ export async function requestAi(env, body) {
         signal: AbortSignal.timeout(AI_TIMEOUT_MS)
       });
     } catch (err) {
-      attempts.push(`${endpointLabel(base)}: ${(err && err.message) || err}`);
+      attempts.push({ host: endpointLabel(base), status: 0, reason: (err && err.message) || String(err) });
       continue; // network failure or a bad base URL: the next endpoint may answer
     }
 
@@ -105,12 +105,31 @@ export async function requestAi(env, body) {
     }
 
     const detail = (await res.text().catch(() => '')).slice(0, 200);
-    attempts.push(`${endpointLabel(base)} ${res.status}${detail ? `: ${detail}` : ''}`);
+    attempts.push({ host: endpointLabel(base), status: res.status, reason: detail.slice(0, 120) });
     console.error('[system] ai request rejected:', endpointLabel(base), res.status, detail);
     // A rate limit or an outage is not a key problem, so do not hammer the other hosts.
     if (!AI_RETRY_STATUS.includes(res.status)) break;
   }
-  return { ok: false, detail: attempts.join(' | ').slice(0, 600) };
+  const detail = attempts
+    .map((a) => `${a.host} ${a.status || a.reason}${a.status && a.reason ? `: ${a.reason}` : ''}`)
+    .join(' | ');
+  return { ok: false, detail: detail.slice(0, 600), attempts };
+}
+
+/* A reason the UI can act on. A rejected key looks different from an outage,
+   and neither message ever carries the key itself. */
+export function aiFailureHint(result) {
+  const attempts = (result && result.attempts) || [];
+  if (!attempts.length) {
+    return 'No AI provider could be reached. Check the deployment network and the server logs.';
+  }
+  const hosts = [...new Set(attempts.map((a) => a.host))].join(', ');
+  const rejected = attempts.every((a) => a.status === 401 || a.status === 403);
+  if (rejected) {
+    return `OPENAI_API_KEY was rejected by every provider (${hosts}). The key is expired, revoked or from another project — create a new one and replace the secret (Sites → Secrets, or .env locally).`;
+  }
+  const summary = attempts.map((a) => `${a.host} ${a.status || 'unreachable'}`).join(', ');
+  return `Every AI provider failed (${summary}). Retry in a moment; if it happens again, check the key and the provider's status page.`;
 }
 
 /* The model's JSON is untrusted: clamp every field the UI renders. */

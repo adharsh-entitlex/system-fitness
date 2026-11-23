@@ -28,7 +28,7 @@ import { pbkdf2Sync, randomBytes, timingSafeEqual, createHash, randomUUID } from
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // The planner transport is shared with the hosted Worker so the two agree.
-import { cleanMeals, requestAi } from '../worker/ai.js';
+import { aiFailureHint, cleanMeals, requestAi } from '../worker/ai.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = resolve(ROOT, 'public');
@@ -324,6 +324,7 @@ async function handleAi(req, res, user) {
   if (!result.ok) {
     return sendJson(res, 502, {
       error: 'AI request failed for every configured endpoint.',
+      hint: aiFailureHint(result),
       detail: result.detail
     });
   }

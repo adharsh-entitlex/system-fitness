@@ -17,7 +17,7 @@ const AI_DIETS = [
 ];
 
 function aiState() {
-  if (!state.ai) state.ai = { diet: 'balanced', notes: '', results: [], at: 0, error: '', busy: false, remaining: null };
+  if (!state.ai) state.ai = { diet: 'balanced', notes: '', results: [], at: 0, error: '', detail: '', busy: false, remaining: null };
   return state.ai;
 }
 
@@ -67,6 +67,7 @@ function aiPanelHtml() {
         ${ai.at ? `<span class="hint" style="align-self:center">built ${new Date(ai.at).toLocaleTimeString()}</span>` : ''}
       </div>
       ${ai.error ? `<p class="ai-error">${esc(ai.error)}</p>` : ''}
+      ${ai.error && ai.detail ? `<p class="ai-detail">${esc(ai.detail)}</p>` : ''}
     </div>
     ${cards ? `<div class="panel"><div class="food-grid">${cards}</div></div>` : ''}
   `;
@@ -89,6 +90,7 @@ async function requestAiPlan() {
   ai.notes = notesEl ? notesEl.value.slice(0, 300) : ai.notes;
   ai.busy = true;
   ai.error = '';
+  ai.detail = '';
   renderAll();
 
   const today = todayKey();
@@ -114,14 +116,17 @@ async function requestAiPlan() {
 
     if (!res.ok || !body || !body.meals) {
       ai.error = (body && body.hint) || (body && body.error) || `The planner failed (HTTP ${res.status}).`;
+      ai.detail = (body && body.detail) || '';
     } else {
       ai.results = body.meals;
       ai.at = Date.now();
       ai.remaining = body.remaining || null;
+      ai.detail = '';
       toast('Plan ready — three meals from your pantry.', 'gold');
     }
   } catch {
     ai.error = 'Could not reach the server. Try again in a moment.';
+    ai.detail = '';
   } finally {
     ai.busy = false;
     save();

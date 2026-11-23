@@ -897,6 +897,7 @@ label.field .lbl {
 .session-date { font-family: var(--font-display); font-size: 9px; letter-spacing: 0.18em; color: var(--muted); }
 .session-name { font-family: var(--font-display); font-size: 12px; letter-spacing: 0.14em; color: #eaf6ff; margin-top: 3px; }
 .session-head .quest-tag { margin-left: auto; font-size: 8px; }
+.session-note { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .ex-list.compact .ex { padding: 7px 10px; }
 .ex-list.compact .ex-name { font-size: 14px; }
 .session-foot { margin-top: 10px; font-family: var(--font-display); font-size: 8.5px; letter-spacing: 0.16em; color: var(--muted); }
@@ -1088,6 +1089,14 @@ body.is-locked { overflow: hidden; }
 /* ---- AI meal plan ---- */
 
 .ai-card .food-macros { margin-top: 4px; }
+.ai-detail {
+  margin: 8px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-word;
+}
 .ai-steps {
   margin: 10px 0 12px;
   padding-left: 18px;

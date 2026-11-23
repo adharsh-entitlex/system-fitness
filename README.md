@@ -39,6 +39,10 @@ a CI-built Android app.
 - **Achievements** — eleven milestones (streaks, levels, quests, hydration,
   weigh-ins, meals, sharing) that unlock once and pay XP, shown as a badge
   shelf in the Hunter Record.
+- **Workout history** — every cleared day becomes a session with its exercises,
+  sets, load and an optional note. HISTORY → + LOG SESSION backfills a workout
+  you already trained on any past date, so a streak started before the app did
+  is not lost.
 - **Share your record** — a native share sheet (clipboard fallback) with the
   hunter's level, rank, quests and streak, so progress is easy to post.
 - **Google sign-in** — either sign in with Google, or attach Google to an
@@ -71,6 +75,11 @@ default model (`openai/gpt-oss-120b` on Groq, `gpt-4o-mini` elsewhere) unless
 400/401/403/404 the request is retried on the others, so no base URL needs
 setting. `AI_BASE_URL=…` is only for some other OpenAI-compatible provider and
 still takes priority.
+
+If the planner reports that the key was rejected by every provider, the secret
+itself is dead (expired, revoked or from another project): create a new key and
+replace `OPENAI_API_KEY`. The error names each provider's host and status, so a
+bad key is never mistaken for an outage.
 
 **Free keys.** Groq has a free plan with no card: create a key at
 <https://console.groq.com/keys> and put it in `OPENAI_API_KEY`. Free models there

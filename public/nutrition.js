@@ -101,6 +101,7 @@ function renderHistory() {
           <div>
             <div class="session-date">${shortDate(d)}</div>
             <div class="session-name">${esc(name)}</div>
+            ${l.note ? `<div class="session-note">${esc(l.note)}</div>` : ''}
           </div>
           <span class="quest-tag ${tagClass}">${tag.toUpperCase()}</span>
         </div>
@@ -120,6 +121,7 @@ function renderHistory() {
       <h2>WORKOUT HISTORY</h2>
       <div class="line"></div>
       <span class="hint">${entries.length} session${entries.length === 1 ? '' : 's'} logged</span>
+      <button class="btn" data-act="session-log">+ LOG SESSION</button>
     </div>
 
     <div class="stat-grid">
@@ -137,9 +139,90 @@ function renderHistory() {
 
     <div class="filters">${filters}</div>
     <div class="sessions">
-      ${sessions || '<div class="empty">No sessions logged yet. Clear today\'s quest and it will appear here with every exercise and weight.</div>'}
+      ${sessions || '<div class="empty">No sessions logged yet. Clear today\'s quest, or tap LOG SESSION to add a workout you already trained.</div>'}
     </div>
   `;
+}
+
+/* A session the hunter trained before the day was in the app: any date up to
+   today, using a workout from the library. It is a normal completed log, so
+   the streak, quest map, achievements and history all treat it the same. */
+function openSessionLogger() {
+  if (!state.templates.length) {
+    openModal(`
+      <h2>LOG A SESSION</h2>
+      <div class="sub">Forge a workout in the library first, then log the sessions you trained with it.</div>
+      <div class="modal-actions">
+        <button class="btn primary" data-act="modal-close">GOT IT</button>
+      </div>
+    `);
+    return;
+  }
+
+  const options = state.templates
+    .map((t) => `<option value="${t.id}">${esc(t.name)}</option>`)
+    .join('');
+
+  openModal(`
+    <h2>LOG A SESSION</h2>
+    <div class="sub">Add a workout you already trained. It joins your streak, quest map and history.</div>
+    <div class="form-grid two">
+      <label class="field"><span class="lbl">DATE</span>
+        <input type="date" data-session="date" max="${todayKey()}" min="${keyOf(addDays(new Date(), -365))}" value="${todayKey()}" />
+      </label>
+      <label class="field"><span class="lbl">WORKOUT</span>
+        <select data-session="template">${options}</select>
+      </label>
+      <label class="field" style="grid-column:1/-1"><span class="lbl">NOTE (OPTIONAL)</span>
+        <input type="text" data-session="note" maxlength="120" placeholder="e.g. evening session, felt strong" />
+      </label>
+    </div>
+    <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+      Every exercise is stored as done with the weights from the workout. Correct a weight afterwards with the pencil in the session log.
+    </p>
+    <div class="modal-actions">
+      <button class="btn primary" data-act="session-save">ADD TO HISTORY</button>
+      <button class="btn ghost" data-act="modal-close">CANCEL</button>
+    </div>
+  `);
+}
+
+function saveSessionFromHistory() {
+  const raw = ($('[data-session="date"]')?.value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) { toast('Pick a date first.', 'danger'); return; }
+  if (raw > todayKey()) { toast('You cannot log a session in the future.', 'danger'); return; }
+
+  const tplId = $('[data-session="template"]')?.value || '';
+  const tpl = state.templates.find((t) => t.id === tplId) || null;
+  if (!tpl) { toast('Pick a workout to log.', 'danger'); return; }
+
+  const existing = state.logs[raw];
+  if (existing && existing.status === 'completed') {
+    toast('That day is already cleared — correct it from the session log instead.', 'danger');
+    return;
+  }
+
+  const note = ($('[data-session="note"]')?.value || '').trim().slice(0, 120);
+  const log = existing || { status: 'pending', templateId: null, exercises: [], xpAwarded: false };
+  log.templateId = tpl.id;
+  log.exercises = tpl.exercises.map((e) => ({ ...e, done: true }));
+  log.status = 'completed';
+  if (note) log.note = note;
+  if (!log.xpAwarded) {
+    log.xpAwarded = true;
+    grantXp(XP_WORKOUT);
+  }
+  state.logs[raw] = log;
+
+  // Backfilling before the record began moves the start back, so the new day
+  // is a cleared quest rather than one that predates the hunt.
+  const started = startedKey();
+  if (!started || raw < started) state.meta = { ...(state.meta || {}), startedAt: raw };
+
+  save();
+  closeModal();
+  renderAll();
+  toast(`${tpl.name} logged for ${shortDate(parseKey(raw))}.`, 'gold');
 }
 
 /* ---------------- nutrition ---------------- */
@@ -528,6 +611,10 @@ document.addEventListener('click', (e) => {
     removePantryItem(el.dataset.item);
   } else if (act === 'save-pantry-edit') {
     savePantryEdit(el.dataset.item);
+  } else if (act === 'session-log') {
+    openSessionLogger();
+  } else if (act === 'session-save') {
+    saveSessionFromHistory();
   } else if (act === 'pantry-clear') {
     if (confirm('Clear every pantry ingredient? Suggestions will reset.')) {
       state.pantry = [];
