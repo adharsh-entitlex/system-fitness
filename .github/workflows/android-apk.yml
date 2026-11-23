@@ -5,6 +5,11 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to attach the APK to (e.g. v1.7.0). Empty: artifact only."
+        required: false
+        default: ""
   push:
     branches: [main]
     paths:
@@ -12,7 +17,7 @@ on:
       - ".github/workflows/android-apk.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   apk:
@@ -114,3 +119,19 @@ jobs:
             android/*.apk
             android/*.aab
           if-no-files-found: error
+
+      # A release asset URL is permanent; an artifact URL expires. Set the
+      # release_tag input to attach this build to a release (create it first
+      # with `gh release create <tag> --title ... --notes ...`).
+      - name: Attach the APK to a release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          VERSION=$(node -p "require('./android/twa-manifest.json').appVersionName")
+          cp android/app-release-signed.apk "THE-SYSTEM-$VERSION.apk"
+          echo "Attaching THE-SYSTEM-$VERSION.apk to $RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" "THE-SYSTEM-$VERSION.apk" --clobber
+          gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size) bytes  \(.url)"'

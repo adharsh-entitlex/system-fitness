@@ -204,6 +204,17 @@ ECDH P-256 key and aes128gcm — no external push service and no dependency.
 - uploads `the-system-apk` and writes the signing certificate fingerprint into
   the job summary and the job log
 
+The run's artifact expires after 90 days. For a download link that lasts, cut a
+release and attach the APK to it — that URL is what this README links to:
+
+```
+gh release create v1.7.0 artifacts/THE-SYSTEM-1.7.0.apk \
+  --title "THE SYSTEM 1.7.0" --notes "Signed with the stable key; installs over 1.6.0."
+```
+
+Name each later release after its `appVersionName` (`v1.8.0`, …) and upload the
+APK from that version's CI run as the asset.
+
 These repository secrets are set on the repo, so every build from now on is
 signed with the same key:
 
@@ -244,10 +255,12 @@ accepts a comma-separated list, so several signatures can be valid at once.
 The key is the one 1.6.0 shipped with: run #8 generated it, `artifacts/THE-SYSTEM-1.6.0.apk`
 carries the same certificate, so 1.7.0 installs straight over it — no uninstall.
 
-1. Open **Actions → Build Android APK → the latest run** and download the
-   `the-system-apk` artifact.
-2. Unzip it and copy `app-release-signed.apk` to the phone.
-3. Tap the file and allow installs from your file manager when Android asks.
+1. Download **[THE-SYSTEM-1.7.0.apk](https://github.com/adharsh-entitlex/system-fitness/releases/download/v1.7.0/THE-SYSTEM-1.7.0.apk)**
+   from the [v1.7.0 release](https://github.com/adharsh-entitlex/system-fitness/releases/tag/v1.7.0).
+   That link is permanent — release assets do not expire the way Actions
+   artifacts do (artifacts are deleted after 90 days).
+2. Copy the file to the phone.
+3. Tap it and allow installs from your file manager when Android asks.
    Android treats it as an update of the installed app.
 4. Open **THE SYSTEM** and sign in — the same account, the same record.
 
