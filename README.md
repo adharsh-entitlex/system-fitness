@@ -185,12 +185,31 @@ pre-commit hook does it for you once `npm install` has run.
 
 ### Google sign-in
 
-1. Create an OAuth 2.0 **Web application** client in Google Cloud Console.
-2. Add authorised redirect URIs, one per deployment:
+1. Google Cloud Console → **APIs & Services → OAuth consent screen**: External,
+   app name, support email, scopes `openid email profile`. While the app is in
+   **Testing** only listed test users can sign in, so add every Google account
+   you want to use, or publish the app.
+2. **Credentials → Create credentials → OAuth client ID → Web application.**
+   Authorised redirect URIs, exact strings, one per deployment:
    `https://the-system-fitness-ehtabh.freebuff.site/api/auth/google/callback`,
-   `https://system-fitness.adharsh-bb1.workers.dev/api/auth/google/callback`
-   (and `http://localhost:3000/api/auth/google/callback` for local use).
-3. Put the client id and secret in Sites → Secrets / the Worker's variables.
+   `https://the-system-fitness-ehtabh-preview.freebuff.site/api/auth/google/callback`,
+   `https://system-fitness.adharsh-bb1.workers.dev/api/auth/google/callback`,
+   `http://localhost:8787/api/auth/google/callback` (only for `npm run worker`).
+3. Where the pair goes — the Worker reads them, the browser never does, so no
+   code change or redeploy is needed:
+   - Sites deployment: Sites panel → THE SYSTEM — Fitness → **Secrets**, add
+     `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to each environment you want
+     it on (preview and production are separate).
+   - Your own Cloudflare account: dashboard → Workers & Pages → `system-fitness`
+     → Settings → Variables and Secrets, add both as **secret** type (or
+     `npx wrangler secret put GOOGLE_CLIENT_ID` for each name).
+   - Local worker: the same two lines in `.dev.vars`, which `wrangler dev` reads.
+     `npm start` (the Node server in `server/server.mjs`) has no Google routes,
+     so the button stays hidden there — use `npm run worker` to test locally.
+
+After adding them, `/api/auth/config` answers `{"google":true,…}` and the button
+appears on the sign-in screen. If it still says `false`, the secrets landed on a
+different environment than the URL you opened.
 
 Until both are set the button stays hidden and `/api/auth/config` reports
 `google: false`; email + password keeps working.
