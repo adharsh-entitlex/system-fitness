@@ -94,6 +94,7 @@ function adopt(data) {
   if (!data || !data.state) return false;
   adopting = true;
   state = normalizeState(data.state);
+  if (typeof ensureStartDate === 'function') ensureStartDate();
   save();
   adopting = false;
   sync.error = '';
@@ -228,6 +229,8 @@ async function afterAuthChange() {
     await loadPushConfig();
     pushTick(true);
   }
+  // A fresh account gets the walkthrough once the profile step is out of the way.
+  if (typeof maybeStartTour === 'function') maybeStartTour();
 }
 
 // Reconnect after the server or the network came back.

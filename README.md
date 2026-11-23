@@ -23,6 +23,14 @@ a CI-built Android app.
   so reminders arrive with the app closed. A test button proves delivery.
 - **Offline first** — the record is cached in `localStorage` and the app shell in
   a service worker, so it keeps working with no network and syncs when it can.
+- **A first day, not a backlog** — a new account (or a guest record) starts on
+  the day it is created: days before it are blank in the quest map instead of
+  showing as missed workouts.
+- **Guided tour** — the first run walks through the quest, water, workouts,
+  nutrition, progress and settings one card at a time. Settings → SHOW TUTORIAL
+  replays it.
+- **Google sign-in** — either sign in with Google, or attach Google to an
+  existing email account from Settings → GOOGLE ACCOUNT.
 
 ## Local development
 
@@ -89,12 +97,34 @@ npm run build:worker
 ```
 
 Live: https://the-system-fitness-ehtabh.freebuff.site
+A second deployment runs on the owner's own Cloudflare account:
+<https://system-fitness.adharsh-bb1.workers.dev>
+
+### Your own Cloudflare account
+
+The same Worker deploys straight from this repo:
+
+```bash
+npx wrangler login                              # once
+npx wrangler d1 create system-fitness           # copy the database_id into wrangler.jsonc
+npm run build:worker
+npx wrangler deploy
+```
+
+Then set the secrets on that Worker (dashboard → Worker → Settings → Variables,
+or `npx wrangler secret put NAME`): `OPENAI_API_KEY`, `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and later `TWA_FINGERPRINT`. The origin is
+read from the request when `APP_ORIGIN` is unset, so no extra variable is needed
+on `*.workers.dev`; set it if the app moves behind a custom domain.
+
+The first request creates the D1 tables. The cron trigger in `wrangler.jsonc`
+sends water reminders while the app is closed.
 
 Secrets (Sites → Secrets) — deploy once *before* setting them:
 
 | Name | Needed for | Notes |
 | --- | --- | --- |
-| `VAPID_PUBLIC_KEY` | device notifications | `npm run vapid`, already set |
+| `VAPID_PUBLIC_KEY` | device notifications | `npm run vapid`; `/api/auth/config` reports `push: true` once both VAPID keys are set |
 | `VAPID_PRIVATE_KEY` | device notifications | keep stable; rotating it drops old subscriptions |
 | `VAPID_SUBJECT` | device notifications | `mailto:` or an `https:` URL |
 | `OPENAI_API_KEY` | AI meal plan | a Freebuff key, a plain OpenAI (`sk-…`) key or a free Groq key (`gsk_…`); the endpoint and model follow the key, and the planner returns a setup hint until the secret exists |
@@ -108,13 +138,20 @@ server only.
 ### Google sign-in
 
 1. Create an OAuth 2.0 **Web application** client in Google Cloud Console.
-2. Add authorised redirect URIs:
-   `https://the-system-fitness-ehtabh.freebuff.site/api/auth/google/callback`
+2. Add authorised redirect URIs, one per deployment:
+   `https://the-system-fitness-ehtabh.freebuff.site/api/auth/google/callback`,
+   `https://system-fitness.adharsh-bb1.workers.dev/api/auth/google/callback`
    (and `http://localhost:3000/api/auth/google/callback` for local use).
-3. Put the client id and secret in Sites → Secrets.
+3. Put the client id and secret in Sites → Secrets / the Worker's variables.
 
 Until both are set the button stays hidden and `/api/auth/config` reports
 `google: false`; email + password keeps working.
+
+Signed-in users can attach Google to their existing account: Settings →
+GOOGLE ACCOUNT → CONNECT GOOGLE. The intent rides in the same HttpOnly state
+cookie as the OAuth `state`, so `/api/auth/google/start?link=1` can only link
+the account that started the flow, and an email that already belongs to another
+account is refused (`?auth=google-in-use`).
 
 ## Data model (D1)
 
@@ -168,14 +205,17 @@ Then set `TWA_FINGERPRINT` (Sites → Secrets) to the printed SHA-256 so `/.well
 
 ### Install on a phone
 
-The current release is **1.5.0** (`appVersionCode` 2), built 22 Nov 2026 and
-signed with `98:E5:B3:AD:39:D6:1B:02:79:AA:E3:24:9C:31:3B:58:C5:EB:45:B5:34:9B:4F:07:CC:DB:2C:C2:0D:23:BF:9A`,
-which `TWA_FINGERPRINT` now holds, so `/.well-known/assetlinks.json` verifies it
-and the app opens fullscreen, with no address bar. `TWA_FINGERPRINT` also accepts
-a comma-separated list, so several signatures can be valid at once.
+The app opens `https://system-fitness.adharsh-bb1.workers.dev` (the owner's own
+Cloudflare Worker). The current release is **1.6.0** (`appVersionCode` 3), signed
+with the throwaway key of its CI run — read the SHA-256 from that run's log or
+summary and put it in `TWA_FINGERPRINT` for the Worker (and for the Sites
+project, if that deployment should host the app too).
+`/.well-known/assetlinks.json` then verifies the signature and the app opens
+fullscreen, with no address bar. `TWA_FINGERPRINT` accepts a comma-separated
+list, so several signatures can be valid at once.
 
-Since this build uses a throwaway key, its signature differs from earlier
-builds: uninstall the old app before installing 1.5.0.
+Since these builds use a throwaway key, the signature changes with every run:
+uninstall the old app before installing a new one, and update the fingerprint.
 
 1. Open **Actions → Build Android APK → the latest run** and download the
    `the-system-apk` artifact.

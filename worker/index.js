@@ -225,24 +225,45 @@ async function handleLogout(request, env) {
   return json({ ok: true }, 200, { 'Set-Cookie': clearCookie(env, 'sys_session') });
 }
 
-async function handleGoogleStart(request, env) {
+async function handleGoogleStart(request, env, url) {
   if (!googleConfigured(env)) {
     return json({ error: 'Google sign-in is not configured on this deployment.' }, 503);
   }
+  // ?link=1 attaches Google to the account already signed in here, instead of
+  // signing in with it. The intent and the account id ride in the same
+  // HttpOnly state cookie, so the callback cannot be pointed elsewhere.
+  let linkUserId = '';
+  if (url.searchParams.get('link') === '1') {
+    const me = await currentUser(request, env);
+    if (!me) return redirect('/?auth=signin-required');
+    linkUserId = me.id;
+  }
   const state = crypto.randomUUID();
-  return redirect(googleAuthUrl(env, state, appOrigin(request, env)), { 'Set-Cookie': oauthCookie(env, state) });
+  const cookie = linkUserId ? `${state}|link|${linkUserId}` : state;
+  return redirect(googleAuthUrl(env, state, appOrigin(request, env)), { 'Set-Cookie': oauthCookie(env, cookie) });
 }
 
 async function handleGoogleCallback(request, env, url) {
   if (!googleConfigured(env)) return redirect('/?auth=google-unavailable');
   const state = url.searchParams.get('state');
   const code = url.searchParams.get('code');
-  const expected = readCookie(request, OAUTH_COOKIE);
-  if (!code || !state || !expected || state !== expected) {
+  const cookie = readCookie(request, OAUTH_COOKIE);
+  const [expectedState, intent, linkUserId] = String(cookie || '').split('|');
+  if (!code || !state || !expectedState || state !== expectedState) {
     return redirect('/?auth=state-mismatch');
   }
   try {
     const profile = await googleProfile(env, code, appOrigin(request, env));
+
+    if (intent === 'link') {
+      const me = await currentUser(request, env);
+      if (!me || me.id !== linkUserId) return redirect('/?auth=link-session');
+      const owner = await findUserByEmail(env, profile.email);
+      if (owner && owner.id !== me.id) return redirect('/?auth=google-in-use');
+      await linkGoogle(env, me.id, profile.sub, profile.avatar);
+      return redirect('/', { 'Set-Cookie': clearCookie(env, OAUTH_COOKIE) });
+    }
+
     let row = await findUserByEmail(env, profile.email);
     if (!row) {
       const created = await createUser(env, {
@@ -592,7 +613,7 @@ async function handle(request, env) {
     return json({ user: await currentUser(request, env) });
   }
 
-  if (pathname === '/api/auth/google/start') return handleGoogleStart(request, env);
+  if (pathname === '/api/auth/google/start') return handleGoogleStart(request, env, url);
   if (pathname === '/api/auth/google/callback') return handleGoogleCallback(request, env, url);
 
   if (pathname === '/api/auth/signup' || pathname === '/api/auth/login' || pathname === '/api/auth/logout') {

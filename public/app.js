@@ -69,7 +69,9 @@ function defaultState() {
     nutrition: { kcal: 2200, protein: 140 },
     ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', busy: false, remaining: null },
     reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 },
-    meta: { updatedAt: 0 }
+    // startedAt is the day this record began: days before it are never counted
+    // as missed workouts. tourDone remembers the first-run walkthrough.
+    meta: { updatedAt: 0, startedAt: '', tourDone: false }
   };
 }
 
@@ -197,6 +199,32 @@ const addDays = (d, n) => {
 };
 const shortDate = (d) => `${DAY_LABELS[d.getDay()]} · ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 
+/* The day the hunt began. A brand-new record starts today, so nothing from
+   before sign-up shows up as a missed quest. An existing record keeps its
+   earliest logged day as the start. */
+function startedKey() {
+  const value = (state.meta && state.meta.startedAt) || '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+}
+
+function ensureStartDate() {
+  state.meta = state.meta || {};
+  const logged = Object.keys(state.logs || {})
+    .filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key))
+    .sort();
+  const earliest = logged.length ? logged[0] : '';
+  const current = startedKey();
+  if (current && (!earliest || current <= earliest)) return;
+  state.meta.startedAt = earliest || current || todayKey();
+  // Written straight to the cache on purpose: this is a local repair, and it
+  // must not stamp meta.updatedAt or an empty record would win the first sync.
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  } catch (err) {
+    memoryStore = state;
+  }
+}
+
 /* ---------------- derived model ---------------- */
 
 function levelOf(xp) { return 1 + Math.floor(xp / XP_PER_LEVEL); }
@@ -226,6 +254,9 @@ function ensureLog(key) {
 }
 
 function dayState(key) {
+  const started = startedKey();
+  // Before the record began, a scheduled day is not a failure.
+  if (started && key < started) return 'pre';
   const p = planFor(key);
   const today = todayKey();
   if (p.log && p.log.status === 'completed') return 'done';
@@ -467,7 +498,7 @@ function openProfileSetup() {
     </div>
     <div class="modal-actions">
       <button class="btn primary" data-act="save-profile">SAVE PROFILE</button>
-      <button class="btn ghost" data-act="modal-close">LATER</button>
+      <button class="btn ghost" data-act="profile-later">LATER</button>
     </div>
   `);
 }
@@ -502,6 +533,7 @@ function saveProfile() {
   closeModal();
   renderAll();
   toast(`BMI ${bmiOf(profile).toFixed(1)} · ${bmiBand(bmiOf(profile)).label}. Targets updated.`, 'gold');
+  maybeStartTour();
 }
 
 /* ---------------- notifications & toasts ---------------- */
@@ -605,6 +637,14 @@ function switchView(view) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.id === `view-${view}`));
   renderAll();
+  try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (err) { /* older browser */ }
+}
+
+/* A short tick on devices that can do it: the app should answer a tap. */
+function tapFeedback(ms = 8) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(ms);
+  } catch (err) { /* desktop and iOS simply ignore it */ }
 }
 
 /* ---------------- rendering: today ---------------- */
@@ -820,8 +860,9 @@ function renderProgress() {
     const d = addDays(start, i);
     const key = keyOf(d);
     const st = dayState(key);
-    const cls = st === 'done' ? 'done' : st === 'skip' ? 'skip' : st === 'miss' ? 'miss' : st === 'rest' ? 'rest' : st === 'pending' ? 'pending' : 'upcoming';
-    cells.push(`<button class="hm-cell ${cls} ${key === todayKey() ? 'today' : ''}" data-act="day-open" data-key="${key}" title="${key} · ${st}" aria-label="${key} ${st}"></button>`);
+    const cls = st === 'done' ? 'done' : st === 'skip' ? 'skip' : st === 'miss' ? 'miss' : st === 'rest' ? 'rest' : st === 'pre' ? 'pre' : st === 'pending' ? 'pending' : 'upcoming';
+    const label = st === 'pre' ? 'before your hunt began' : st;
+    cells.push(`<button class="hm-cell ${cls} ${key === todayKey() ? 'today' : ''}" data-act="day-open" data-key="${key}" title="${key} · ${label}" aria-label="${key} ${label}"></button>`);
   }
 
   const days = [];
@@ -902,7 +943,7 @@ function renderProgress() {
     <div class="section-head">
       <h2>QUEST MAP</h2>
       <div class="line"></div>
-      <span class="hint">Tap a day to log or edit it</span>
+      <span class="hint">${startedKey() ? `Since ${startedKey()}` : 'Tap a day to log or edit it'}</span>
     </div>
     <div class="panel">
       <div class="heatmap">${cells.join('')}</div>
@@ -911,6 +952,7 @@ function renderProgress() {
         <span><i style="background:rgba(255,84,112,.32);border-color:rgba(255,84,112,.5)"></i>Skipped</span>
         <span><i style="background:rgba(255,84,112,.1);border-color:rgba(255,84,112,.22)"></i>Missed</span>
         <span><i style="background:rgba(139,92,246,.1);border-color:rgba(139,92,246,.2)"></i>Rest</span>
+        <span><i style="background:transparent;border-style:dashed;border-color:rgba(122,146,184,.3)"></i>Before start</span>
         <span><i style="border-color:#5fe6ff;background:rgba(95,230,255,.12)"></i>Today</span>
       </div>
     </div>
@@ -1236,6 +1278,8 @@ function openSettings() {
   const perm = notifySupported() ? Notification.permission : 'unsupported';
   const permLabel = perm === 'granted' ? 'ALERTS ON' : perm === 'denied' ? 'BLOCKED' : perm === 'unsupported' ? 'UNSUPPORTED' : 'ENABLE ALERTS';
   const every = state.reminders.everyMin;
+  const account = typeof auth !== 'undefined' ? auth.user : null;
+  const googleReady = typeof auth !== 'undefined' && auth.config ? !!auth.config.google : false;
   openModal(`
     <h2>SYSTEM SETTINGS</h2>
     <div class="sub">Goals, alerts and hunter identity.</div>
@@ -1294,9 +1338,31 @@ function openSettings() {
         <span id="settingsAccount">${esc(typeof authAccountLabel === 'function' ? authAccountLabel() : 'Not signed in.')}</span>
       </p>
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
-        ${typeof auth !== 'undefined' && auth.user
+        ${account
           ? '<button class="btn ghost" data-act="auth-signout">SIGN OUT</button>'
           : '<button class="btn" data-act="auth-open">SIGN IN OR CREATE ACCOUNT</button>'}
+      </div>
+
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">GOOGLE ACCOUNT</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        ${account
+          ? account.google
+            ? 'Google is connected to this account. You can sign in with your password or with Google — same account, same record.'
+            : googleReady
+              ? 'Connect Google to sign in with one tap on any device. It attaches to this account, so nothing is duplicated or lost.'
+              : 'Google sign-in is not configured on this deployment yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET as Worker secrets to switch it on.'
+          : 'Sign in first, then Google can be attached to that account.'}
+      </p>
+      ${account && !account.google && googleReady
+        ? '<div class="modal-actions" style="margin-top:0;justify-content:flex-start"><button class="btn" data-act="link-google">CONNECT GOOGLE</button></div>'
+        : ''}
+
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">TUTORIAL</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        Replay the walkthrough: today's quest, water, workouts, nutrition, progress and where the settings live.
+      </p>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn" data-act="start-tour">SHOW TUTORIAL</button>
       </div>
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">DEVICE NOTIFICATIONS</h2><div class="line"></div></div>
@@ -1366,11 +1432,200 @@ function saveSettings() {
   toast('Settings saved.');
 }
 
+/* ---------------- guided tour --------------
+   The first run walks through the app one part at a time: everything but
+   the current element is dimmed and a card says what it is for. Skipping
+   still marks it done, and Settings can replay it at any time. */
+
+const TOUR_STEPS = [
+  {
+    title: 'WELCOME TO THE SYSTEM',
+    body: 'This is your personal training record. Your hunt starts today, so nothing from before today ever shows up as a missed quest. Here is where everything lives.',
+    view: 'today'
+  },
+  {
+    title: 'LEVEL, RANK & XP',
+    target: '.topbar',
+    body: 'Clearing a workout earns +100 XP; hitting the water goal earns +40. XP raises your level and your level sets the rank beside it.',
+    view: 'today'
+  },
+  {
+    title: 'THE DAILY QUEST',
+    target: '#view-today .quest',
+    body: 'Your workout for today. Tick each exercise as you finish it, then press COMPLETE QUEST. Swapping the workout or adding one exercise only changes today, never your saved library.',
+    view: 'today'
+  },
+  {
+    title: 'HYDRATION',
+    target: '#view-today .panel',
+    body: 'Tap +250, +500 or +750 ml as you drink. The ring fills towards your daily goal, and the reminder switch nags you every 90 minutes between 08:00 and 22:00.',
+    view: 'today'
+  },
+  {
+    title: 'WORKOUT LIBRARY',
+    target: '#view-workouts .card-grid',
+    body: 'Forge your own workouts here and assign them to days of the week. The Today screen follows that schedule automatically, and every day you keep is recorded in the quest map.',
+    view: 'workouts'
+  },
+  {
+    title: 'NUTRITION',
+    target: '#view-nutrition .panel',
+    body: 'Log what you eat against your calorie and protein targets, keep the pantry honest, and ask the AI coach for a plan built from what you actually have at home.',
+    view: 'nutrition'
+  },
+  {
+    title: 'PROGRESS',
+    target: '#view-progress .panel',
+    body: 'Weigh in here and the trend line plus BMI change build up over time. The quest map below fills as you go; days before you started stay blank on purpose.',
+    view: 'progress'
+  },
+  {
+    title: 'SETTINGS',
+    target: '#settingsBtn',
+    body: 'The gear holds your goals, body profile, device notifications, Google sign-in, backups and this tutorial.',
+    view: 'today'
+  },
+  {
+    title: 'ALMOST THERE',
+    body: 'Two things worth doing now: turn on device notifications so reminders reach your phone with the app closed, and connect Google in Settings for one-tap sign-in. This tour lives in Settings → SHOW TUTORIAL whenever you want it again.',
+    view: 'today'
+  }
+];
+
+let tourIndex = 0;
+let tourActive = false;
+
+function tourRoot() {
+  let root = document.getElementById('tour');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'tour';
+    root.className = 'tour';
+    root.hidden = true;
+    root.innerHTML = `
+      <div class="tour-spot" id="tourSpot" aria-hidden="true"></div>
+      <div class="tour-card" role="dialog" aria-modal="true" aria-labelledby="tourTitle">
+        <div class="tour-top">
+          <span class="tour-count" id="tourCount"></span>
+          <button class="tour-skip" data-act="tour-end" type="button">SKIP</button>
+        </div>
+        <h3 id="tourTitle"></h3>
+        <p id="tourBody"></p>
+        <div class="tour-actions">
+          <button class="btn ghost" data-act="tour-back" type="button">BACK</button>
+          <button class="btn primary" data-act="tour-next" type="button">NEXT</button>
+        </div>
+      </div>`;
+    document.body.appendChild(root);
+  }
+  return root;
+}
+
+function tourTarget(step) {
+  return step && step.target ? document.querySelector(step.target) : null;
+}
+
+function tourPlaceSpot() {
+  const spot = document.getElementById('tourSpot');
+  if (!spot) return;
+  const el = tourActive ? tourTarget(TOUR_STEPS[tourIndex]) : null;
+  if (!el) {
+    spot.style.opacity = '0';
+    return;
+  }
+  const rect = el.getBoundingClientRect();
+  const pad = 8;
+  spot.style.opacity = '1';
+  spot.style.top = `${Math.max(4, rect.top - pad)}px`;
+  spot.style.left = `${Math.max(4, rect.left - pad)}px`;
+  spot.style.width = `${Math.min(window.innerWidth - 8, rect.width + pad * 2)}px`;
+  spot.style.height = `${Math.min(window.innerHeight - 8, rect.height + pad * 2)}px`;
+}
+
+function showTourStep() {
+  const step = TOUR_STEPS[tourIndex];
+  if (!step) return endTour();
+  tourRoot().hidden = false;
+  tourActive = true;
+  document.body.classList.add('is-touring');
+  if (step.view) switchView(step.view);
+
+  const count = document.getElementById('tourCount');
+  const title = document.getElementById('tourTitle');
+  const body = document.getElementById('tourBody');
+  if (count) count.textContent = `${tourIndex + 1} / ${TOUR_STEPS.length}`;
+  if (title) title.textContent = step.title;
+  if (body) body.textContent = step.body;
+
+  const back = document.querySelector('[data-act="tour-back"]');
+  if (back) back.hidden = tourIndex === 0;
+  const next = document.querySelector('[data-act="tour-next"]');
+  if (next) next.textContent = tourIndex === TOUR_STEPS.length - 1 ? 'START TRAINING' : 'NEXT';
+
+  const el = tourTarget(step);
+  if (el) {
+    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (err) { /* older browser */ }
+  }
+  requestAnimationFrame(tourPlaceSpot);
+  setTimeout(tourPlaceSpot, 320);
+}
+
+function nextTourStep() {
+  if (tourIndex >= TOUR_STEPS.length - 1) {
+    endTour();
+    return;
+  }
+  tourIndex++;
+  showTourStep();
+}
+
+function prevTourStep() {
+  if (tourIndex === 0) return;
+  tourIndex--;
+  showTourStep();
+}
+
+function startTour() {
+  tourIndex = 0;
+  showTourStep();
+}
+
+/* Called on boot, after sign-in and after the profile step, so the tour
+   never lands on top of the gate or a modal. */
+function maybeStartTour() {
+  if (tourActive) return;
+  if (state.meta && state.meta.tourDone) return;
+  const gate = $('#authScreen');
+  if (gate && !gate.hidden) return;
+  const modal = $('#modalRoot');
+  if (modal && !modal.hidden) return;
+  setTimeout(() => {
+    if (tourActive) return;
+    const stillModal = $('#modalRoot');
+    if (stillModal && !stillModal.hidden) return;
+    startTour();
+  }, 420);
+}
+
+function endTour() {
+  tourActive = false;
+  const root = document.getElementById('tour');
+  if (root) root.hidden = true;
+  document.body.classList.remove('is-touring');
+  state.meta = { ...(state.meta || {}), tourDone: true };
+  save();
+  toast('Tour closed. Settings → SHOW TUTORIAL brings it back.');
+}
+
+window.addEventListener('resize', () => { if (tourActive) tourPlaceSpot(); });
+window.addEventListener('scroll', () => { if (tourActive) tourPlaceSpot(); }, { passive: true });
+
 /* ---------------- events ---------------- */
 
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
+  tapFeedback();
   const act = el.dataset.act;
   const key = el.dataset.key;
   const i = el.dataset.i !== undefined ? Number(el.dataset.i) : null;
@@ -1379,6 +1634,11 @@ document.addEventListener('click', async (e) => {
     case 'tab': switchView(el.dataset.view); break;
     case 'open-settings': openSettings(); break;
     case 'modal-close': closeModal(); break;
+    case 'start-tour': closeModal(); startTour(); break;
+    case 'link-google': location.href = '/api/auth/google/start?link=1'; break;
+    case 'tour-next': nextTourStep(); break;
+    case 'tour-back': prevTourStep(); break;
+    case 'tour-end': endTour(); break;
 
     case 'notify-perm': {
       const ok = await requestNotifyPermission();
@@ -1461,6 +1721,7 @@ document.addEventListener('click', async (e) => {
 
     case 'save-settings': saveSettings(); break;
     case 'save-profile': saveProfile(); break;
+    case 'profile-later': closeModal(); maybeStartTour(); break;
     case 'log-weight': logWeight(); break;
     case 'export-backup': exportBackup(); break;
     case 'import-backup': {
@@ -1534,12 +1795,15 @@ document.addEventListener('keydown', (e) => {
     logWeight();
     return;
   }
+  if (e.key === 'Escape' && tourActive) { endTour(); return; }
   if (e.key === 'Escape' && !$('#modalRoot').hidden) closeModal();
 });
 
 /* ---------------- boot ---------------- */
 
+ensureStartDate();
 renderAll();
+setTimeout(maybeStartTour, 1800);
 setInterval(checkWaterReminder, 30000);
 setInterval(renderTopbar, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) renderAll(); });

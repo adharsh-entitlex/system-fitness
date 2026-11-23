@@ -124,7 +124,8 @@ async function bootAuth() {
 function resetLocalRecord() {
   if (typeof sync !== 'undefined') sync.suspend = true;
   state = defaultState();
-  state.meta = { updatedAt: 0 };
+  // A different account starts its own hunt today, with the tour pending.
+  state.meta = { updatedAt: 0, startedAt: todayKey(), tourDone: false };
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch {
@@ -249,6 +250,10 @@ document.addEventListener('submit', (e) => {
   const messages = {
     'google-failed': 'Google sign-in did not complete. Try again, or use your email and password.',
     'google-unavailable': 'Google sign-in is not configured on this deployment.',
+    'google-linked': 'Google connected. You can now sign in with either Google or your password.',
+    'google-in-use': 'That Google account is already attached to a different account here.',
+    'link-session': 'The sign-in expired before Google answered. Sign in again, then connect Google.',
+    'signin-required': 'Sign in first, then connect Google from Settings.',
     'state-mismatch': 'That sign-in link expired. Try again.'
   };
   auth.notice = messages[code] || 'Sign-in did not complete.';
