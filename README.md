@@ -204,16 +204,18 @@ ECDH P-256 key and aes128gcm — no external push service and no dependency.
 - uploads `the-system-apk` and writes the signing certificate fingerprint into
   the job summary and the job log
 
-The run's artifact expires after 90 days. For a download link that lasts, cut a
-release and attach the APK to it — that URL is what this README links to:
+The run's artifact expires after 90 days. For a download link that lasts,
+create a release once and let the workflow attach the APK to it — the
+`release_tag` input does that, and its URL is what this README links to:
 
 ```
-gh release create v1.7.0 artifacts/THE-SYSTEM-1.7.0.apk \
-  --title "THE SYSTEM 1.7.0" --notes "Signed with the stable key; installs over 1.6.0."
+gh release create v1.7.0 --title "THE SYSTEM 1.7.0" --notes "Signed with the stable key; installs over 1.6.0."
 ```
 
-Name each later release after its `appVersionName` (`v1.8.0`, …) and upload the
-APK from that version's CI run as the asset.
+Then **Actions → Build Android APK → Run workflow**, `release_tag` = `v1.7.0`.
+The job uploads `THE-SYSTEM-1.7.0.apk` (named from `appVersionName`) to that
+release. Name each later release after its version (`v1.8.0`, …) and run the
+workflow the same way.
 
 These repository secrets are set on the repo, so every build from now on is
 signed with the same key:
