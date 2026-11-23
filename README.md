@@ -204,22 +204,33 @@ ECDH P-256 key and aes128gcm — no external push service and no dependency.
 - uploads `the-system-apk` and writes the signing certificate fingerprint into
   the job summary and the job log
 
-Add these repository secrets for a stable signature (otherwise a throwaway
-keystore is generated and each build has a new fingerprint):
+These repository secrets are set on the repo, so every build from now on is
+signed with the same key:
 
-| Secret | Meaning |
+| Secret | Value |
 | --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | base64 of your `.keystore` |
+| `ANDROID_KEYSTORE_BASE64` | base64 of the keystore |
 | `ANDROID_KEYSTORE_PASSWORD` | store/key password |
-| `ANDROID_KEY_ALIAS` | key alias |
+| `ANDROID_KEY_ALIAS` | key alias (`android`) |
 
-Then set `TWA_FINGERPRINT` (Sites → Secrets) to the printed SHA-256 so `/.well-known/assetlinks.json` verifies the app and Chrome does not show a URL bar. `targetSdk` is 36 because Bubblewrap 1.27 ignores 37; Play requires 37 from August 2027.
+A build without those secrets now fails on purpose instead of signing with a
+throwaway key: a new signature cannot update an installed app, so Android would
+ask for an uninstall first.
+
+Back the keystore up somewhere you will not lose it (password manager or an
+offline copy). If it is lost, the next build has a new signature and every
+installed copy has to be uninstalled and reinstalled by hand.
+
+`TWA_FINGERPRINT` (`Sites → Secrets` for the Worker) is the SHA-256 of that key,
+so `/.well-known/assetlinks.json` verifies the app and Chrome does not show a URL
+bar. `targetSdk` is 36 because Bubblewrap 1.27 ignores 37; Play requires 37 from
+August 2027.
 
 ### Install on a phone
 
 The app opens `https://system-fitness.adharsh-bb1.workers.dev` (the owner's own
-Cloudflare Worker). The current release is **1.6.0** (`appVersionCode` 3), built
-by run #8 and signed with that run's throwaway key:
+Cloudflare Worker). Release **1.7.0** (`appVersionCode` 4) is signed with the
+stable key:
 
 ```
 E0:C4:A5:2C:7F:5A:BD:4D:56:3F:8B:CC:B9:79:48:28
@@ -229,23 +240,23 @@ A1:3E:55:8A:66:12:6F:11:40:07:FF:D2:21:FC:C6:EA
 That digest is in the Worker's `TWA_FINGERPRINT`, so `/.well-known/assetlinks.json`
 verifies the APK and it opens fullscreen, with no address bar. `TWA_FINGERPRINT`
 accepts a comma-separated list, so several signatures can be valid at once.
-The file itself is `artifacts/THE-SYSTEM-1.6.0.apk`
-(sha256 `719b44f0c3aee06fe08e1d9bd76dbe26030fa16066cabb8011ef146d0642840a`).
 
-Since these builds use a throwaway key, the signature changes with every run:
-uninstall the old app before installing a new one, and update the fingerprint.
+The key is the one 1.6.0 shipped with: run #8 generated it, `artifacts/THE-SYSTEM-1.6.0.apk`
+carries the same certificate, so 1.7.0 installs straight over it — no uninstall.
 
 1. Open **Actions → Build Android APK → the latest run** and download the
    `the-system-apk` artifact.
 2. Unzip it and copy `app-release-signed.apk` to the phone.
 3. Tap the file and allow installs from your file manager when Android asks.
+   Android treats it as an update of the installed app.
 4. Open **THE SYSTEM** and sign in — the same account, the same record.
 
-A build without the keystore secrets is signed with a throwaway key, so every
-new build has a new fingerprint. Re-read it with `openssl x509 -in cert.pem
--fingerprint -sha256 -noout` (extract `META-INF/*.RSA` from the APK first), or
-from the run summary, and update `TWA_FINGERPRINT` before installing that
-build. Adding `ANDROID_KEYSTORE_BASE64` keeps one signature forever.
+`appVersionCode` in `android/twa-manifest.json` must go up for each release; a
+build with the same code is not offered as an update.
+
+The certificate digest can be re-read from an APK with `openssl pkcs7 -inform DER
+-in META-INF/ANDROID.RSA -print_certs | openssl x509 -noout -fingerprint -sha256`
+(after unzipping `META-INF/*` out of it), or from the run summary and job log.
 
 ## Layout
 

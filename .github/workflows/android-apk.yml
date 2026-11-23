@@ -65,16 +65,11 @@ jobs:
             printf '%s' "$KEYSTORE_BASE64" | base64 -d > android.keystore
             echo "source=secret" >> "$GITHUB_OUTPUT"
           else
-            echo "No ANDROID_KEYSTORE_BASE64 secret: signing with a throwaway key."
-            echo "Add one (see README) for APKs that can update each other in place."
-            keytool -genkeypair -v \
-              -keystore android.keystore \
-              -alias "$KEY_ALIAS" \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass "$KEYSTORE_PASSWORD" \
-              -keypass "$KEYSTORE_PASSWORD" \
-              -dname "CN=THE SYSTEM, O=Adharsh M, C=IN"
-            echo "source=generated" >> "$GITHUB_OUTPUT"
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. Refusing to build:"
+            echo "a throwaway key means a new signature, and an APK with a new"
+            echo "signature cannot update an installed app (Android asks for an"
+            echo "uninstall first). Restore the keystore secret; see README."
+            exit 1
           fi
 
       - name: Generate the Android project
@@ -119,10 +114,3 @@ jobs:
             android/*.apk
             android/*.aab
           if-no-files-found: error
-
-      - name: Upload throwaway keystore
-        if: steps.keystore.outputs.source == 'generated'
-        uses: actions/upload-artifact@v4
-        with:
-          name: throwaway-keystore
-          path: android/android.keystore
