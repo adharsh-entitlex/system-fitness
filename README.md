@@ -29,6 +29,18 @@ a CI-built Android app.
 - **Guided tour** — the first run walks through the quest, water, workouts,
   nutrition, progress and settings one card at a time. Settings → SHOW TUTORIAL
   replays it.
+- **A real app, not a tab** — a launch splash, a one-tap install bar (native
+  prompt on Android/Chrome, Share → Add to Home Screen instructions on iOS),
+  home-screen shortcuts for water / today / weigh-in, and a single-window
+  `launch_handler`. Installed, it runs standalone with no address bar.
+- **Daily directive** — one rotating objective a day (hydration, workout,
+  protein, meals or weigh-in) worth bonus XP, claimable once the condition is
+  met. Settings can't fake it; the check reads the day's real log.
+- **Achievements** — eleven milestones (streaks, levels, quests, hydration,
+  weigh-ins, meals, sharing) that unlock once and pay XP, shown as a badge
+  shelf in the Hunter Record.
+- **Share your record** — a native share sheet (clipboard fallback) with the
+  hunter's level, rank, quests and streak, so progress is easy to post.
 - **Google sign-in** — either sign in with Google, or attach Google to an
   existing email account from Settings → GOOGLE ACCOUNT.
 

@@ -5,7 +5,7 @@
    back to the cached shell; static files are cache-first. API calls are
    never cached — sync must fail loudly rather than serve stale records. */
 
-const CACHE = 'system-v5';
+const CACHE = 'system-v6';
 const SHELL = [
   './',
   './index.html',
@@ -17,6 +17,7 @@ const SHELL = [
   './auth.js',
   './ai.js',
   './push.js',
+  './install.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',

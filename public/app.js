@@ -69,9 +69,12 @@ function defaultState() {
     nutrition: { kcal: 2200, protein: 140 },
     ai: { diet: 'balanced', notes: '', results: [], at: 0, error: '', busy: false, remaining: null },
     reminders: { enabled: false, everyMin: 90, lastDrinkAt: 0, lastNotifiedAt: 0 },
+    // Milestone ids already unlocked, and the daily directives already claimed.
+    achievements: { unlocked: {} },
+    bonus: { claimed: {} },
     // startedAt is the day this record began: days before it are never counted
     // as missed workouts. tourDone remembers the first-run walkthrough.
-    meta: { updatedAt: 0, startedAt: '', tourDone: false }
+    meta: { updatedAt: 0, startedAt: '', tourDone: false, shared: false }
   };
 }
 
@@ -100,6 +103,8 @@ function normalizeState(parsed) {
     pantry: Array.isArray(src.pantry) ? src.pantry.filter((item) => typeof item === 'string') : DEFAULT_PANTRY.slice(),
     nutrition: { ...base.nutrition, ...(src.nutrition || {}) },
     ai: { ...base.ai, ...(src.ai || {}), busy: false, results: Array.isArray((src.ai || {}).results) ? src.ai.results : [] },
+    achievements: { unlocked: { ...((src.achievements || {}).unlocked || {}) } },
+    bonus: { claimed: { ...((src.bonus || {}).claimed || {}) } },
     meta: { ...base.meta, ...(src.meta || {}) }
   };
 }
@@ -726,6 +731,8 @@ function renderToday() {
       <div class="quest-actions">${actions.join('')}</div>
     </div>
 
+    ${bonusCardHtml()}
+
     <div class="stat-grid">
       <div class="stat"><div class="k">STREAK</div><div class="v">${streak} <small>DAY${streak === 1 ? '' : 'S'}</small></div></div>
       <div class="stat"><div class="k">THIS WEEK</div><div class="v">${week} <small>/ ${state.goals.weekly}</small></div></div>
@@ -853,6 +860,7 @@ function renderWorkouts() {
 /* ---------------- rendering: progress ---------------- */
 
 function renderProgress() {
+  syncAchievements();
   const today = new Date();
   const start = addDays(today, -(today.getDay() + 7 * 11));
   const cells = [];
@@ -906,6 +914,26 @@ function renderProgress() {
       <div class="stat"><div class="k">BEST STREAK</div><div class="v">${bestStreak()} <small>D</small></div></div>
       <div class="stat gold"><div class="k">TOTAL XP</div><div class="v">${state.xp}</div></div>
       <div class="stat"><div class="k">QUESTS CLEARED</div><div class="v">${completedTotal()}</div></div>
+    </div>
+
+    <div class="section-head">
+      <h2>ACHIEVEMENTS</h2>
+      <div class="line"></div>
+      <span class="hint">${ACHIEVEMENTS.filter((a) => achievementUnlocked(a.id)).length} / ${ACHIEVEMENTS.length}</span>
+    </div>
+    <div class="panel">
+      <div class="badges">${badgeHtml()}</div>
+    </div>
+
+    <div class="panel share-panel">
+      <div class="panel-title">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="18" cy="5" r="2.5" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="12" r="2.5" stroke="currentColor" stroke-width="1.4"/><circle cx="18" cy="19" r="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M8.2 10.8 15.8 6.2M8.2 13.2l7.6 4.6" stroke="currentColor" stroke-width="1.4"/></svg>
+        SHARE YOUR RECORD
+      </div>
+      <p class="panel-sub" style="margin:10px 0 0;line-height:1.6">${esc(shareLine())} Send it to a friend or a group — accountability works better with witnesses.</p>
+      <div class="modal-actions" style="margin-top:12px">
+        <button class="btn primary" data-act="share-progress">SHARE MY RECORD</button>
+      </div>
     </div>
 
     <div class="section-head">
@@ -983,6 +1011,221 @@ function bestStreak() {
     best = Math.max(best, run);
   });
   return best;
+}
+
+/* ---------------- milestones & daily directive --------------
+   The two "come back tomorrow" mechanics. Both are derived from data the
+   hunter already logs, so there is nothing extra to maintain.
+   ------------------------------------------------------------ */
+
+const ACHIEVEMENTS = [
+  {
+    id: 'first-quest', name: 'FIRST BLOOD', desc: 'Clear your first daily quest', xp: 50,
+    icon: '<path d="M13 3h4l4 4v4L11 21l-8-8L13 3Z"/><path d="M15 5l4 4"/>',
+    test: (s) => s.quests >= 1
+  },
+  {
+    id: 'streak-3', name: 'MOMENTUM', desc: 'Train 3 days in a row', xp: 75,
+    icon: '<path d="M13 2 5 14h6l-1 8 9-13h-6l1-7Z"/>',
+    test: (s) => s.streak >= 3
+  },
+  {
+    id: 'streak-7', name: 'SEVEN DAYS', desc: 'Train 7 days in a row', xp: 150,
+    icon: '<path d="M12 3s6 6.4 6 11a6 6 0 0 1-12 0C6 9.4 12 3 12 3Z"/><path d="M12 15.5c-1.6 0-2.6-1-2.6-2.4 0-1.6 1.6-3.1 2.6-3.8 1 .7 2.6 2.2 2.6 3.8 0 1.4-1 2.4-2.6 2.4Z"/>',
+    test: (s) => s.streak >= 7
+  },
+  {
+    id: 'streak-30', name: 'IRON WILL', desc: 'Train 30 days in a row', xp: 400,
+    icon: '<path d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-4Z"/><path d="m9 12 2 2 4-4"/>',
+    test: (s) => s.streak >= 30
+  },
+  {
+    id: 'level-5', name: 'ASCENDING', desc: 'Reach level 5', xp: 100,
+    icon: '<path d="m5 16 7-7 7 7"/><path d="m5 10 7-7 7 7"/>',
+    test: (s) => s.level >= 5
+  },
+  {
+    id: 'level-10', name: 'ELITE HUNTER', desc: 'Reach level 10', xp: 250,
+    icon: '<path d="M8 4h8v4a4 4 0 0 1-8 0V4Z"/><path d="M8 5H5v2a3 3 0 0 0 3 3M16 5h3v2a3 3 0 0 1-3 3M12 12v5M9 20h6"/>',
+    test: (s) => s.level >= 10
+  },
+  {
+    id: 'quests-25', name: 'VETERAN', desc: 'Clear 25 quests', xp: 200,
+    icon: '<path d="M4 19h16"/><path d="M7 19v-5M12 19V8M17 19v-8"/>',
+    test: (s) => s.quests >= 25
+  },
+  {
+    id: 'water-7', name: 'HYDRATED', desc: 'Hit the water goal on 7 days', xp: 100,
+    icon: '<path d="M12 3c3.5 4 5.5 7 5.5 9.8A5.5 5.5 0 0 1 12 18.5 5.5 5.5 0 0 1 6.5 12.8C6.5 10 8.5 7 12 3Z"/>',
+    test: (s) => s.waterDays >= 7
+  },
+  {
+    id: 'weigh-5', name: 'TRACKER', desc: 'Log 5 weigh-ins', xp: 75,
+    icon: '<path d="M12 4v16M7 8h10M5 20h14"/>',
+    test: (s) => s.weighIns >= 5
+  },
+  {
+    id: 'meals-25', name: 'NUTRITIONIST', desc: 'Log 25 meals', xp: 100,
+    icon: '<path d="M4 11h16a8 8 0 0 1-16 0Z"/><path d="M9 7.5c0-1.4 1-2 1-3.5M14 7.5c0-1.4 1-2 1-3.5"/>',
+    test: (s) => s.meals >= 25
+  },
+  {
+    id: 'share', name: 'RECRUITER', desc: 'Share your record once', xp: 60,
+    icon: '<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8 15.8 6.2M8.2 13.2l7.6 4.6"/>',
+    test: (s) => s.shared
+  }
+];
+
+function achievementStats() {
+  const waterGoal = state.goals.water || 2500;
+  const waterDays = Object.keys(state.water || {}).filter((k) => (Number(state.water[k]) || 0) >= waterGoal).length;
+  const meals = Object.values(state.meals || {}).reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0);
+  return {
+    quests: completedTotal(),
+    streak: computeStreak(),
+    level: levelOf(state.xp),
+    waterDays,
+    weighIns: weightEntries().length,
+    meals,
+    shared: !!(state.meta && state.meta.shared)
+  };
+}
+
+function achievementUnlocked(id) {
+  return !!(state.achievements && state.achievements.unlocked && state.achievements.unlocked[id]);
+}
+
+/* Unlocks every milestone whose condition now holds and pays its XP once. */
+function syncAchievements() {
+  state.achievements = state.achievements || { unlocked: {} };
+  state.achievements.unlocked = state.achievements.unlocked || {};
+  const stats = achievementStats();
+  const fresh = ACHIEVEMENTS.filter((a) => !state.achievements.unlocked[a.id] && a.test(stats));
+  if (!fresh.length) return 0;
+  let gained = 0;
+  fresh.forEach((a, i) => {
+    state.achievements.unlocked[a.id] = new Date().toISOString();
+    gained += a.xp;
+    setTimeout(() => toast(`ACHIEVEMENT · ${a.name} — +${a.xp} XP`, 'gold'), 600 + i * 1100);
+  });
+  grantXp(gained);
+  save();
+  return fresh.length;
+}
+
+function badgeHtml() {
+  return ACHIEVEMENTS.map((a) => {
+    const on = achievementUnlocked(a.id);
+    return `<div class="badge ${on ? 'is-on' : ''}" title="${esc(a.desc)}">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">${a.icon}</svg>
+      <div class="bn">${esc(a.name)}</div>
+      <div class="bx">${on ? `+${a.xp} XP` : 'LOCKED'}</div>
+    </div>`;
+  }).join('');
+}
+
+/* A different directive each day, so opening the app is worth doing even
+   when the workout is a rest day. */
+const BONUS_DIRECTIVES = [
+  {
+    id: 'hydrate', title: 'HYDRATION PROTOCOL', desc: 'Reach your water goal today', xp: 60,
+    test: () => (state.water[todayKey()] || 0) >= (state.goals.water || 2500)
+  },
+  {
+    id: 'sweat', title: 'CLEAR THE QUEST', desc: 'Complete today\'s workout', xp: 80,
+    test: () => { const log = state.logs[todayKey()]; return !!(log && log.status === 'completed'); }
+  },
+  {
+    id: 'protein', title: 'PROTEIN TARGET', desc: 'Hit your protein goal', xp: 60,
+    test: () => (state.meals[todayKey()] || []).reduce((n, m) => n + (Number(m.protein) || 0), 0) >= (state.nutrition.protein || 140)
+  },
+  {
+    id: 'meals', title: 'FUEL LOG', desc: 'Log three meals today', xp: 50,
+    test: () => (state.meals[todayKey()] || []).length >= 3
+  },
+  {
+    id: 'weigh', title: 'WEIGH IN', desc: 'Log your weight today', xp: 40,
+    test: () => Number(state.weights[todayKey()]) > 0
+  }
+];
+
+function currentDirective() {
+  const key = todayKey();
+  const days = Math.floor(parseKey(key).getTime() / 86400000);
+  const idx = ((days % BONUS_DIRECTIVES.length) + BONUS_DIRECTIVES.length) % BONUS_DIRECTIVES.length;
+  const directive = BONUS_DIRECTIVES[idx];
+  const claimed = !!(state.bonus && state.bonus.claimed && state.bonus.claimed[key]);
+  let done = false;
+  try { done = !!directive.test(); } catch (err) { done = false; }
+  return { key, directive, done, claimed };
+}
+
+function pruneBonus() {
+  const claimed = (state.bonus && state.bonus.claimed) || {};
+  const keys = Object.keys(claimed).sort();
+  while (keys.length > 30) delete claimed[keys.shift()];
+}
+
+function claimBonus() {
+  const b = currentDirective();
+  if (b.claimed) return;
+  if (!b.done) { toast('Finish the directive first.', 'danger'); return; }
+  state.bonus = state.bonus || { claimed: {} };
+  state.bonus.claimed[b.key] = Date.now();
+  pruneBonus();
+  grantXp(b.directive.xp);
+  save();
+  renderAll();
+  toast(`DIRECTIVE CLEARED · +${b.directive.xp} XP`, 'gold');
+}
+
+function bonusCardHtml() {
+  const b = currentDirective();
+  const label = b.claimed ? 'CLEARED' : b.done ? 'READY TO CLAIM' : 'IN PROGRESS';
+  return `
+    <div class="directive ${b.claimed ? 'is-claimed' : b.done ? 'is-ready' : ''}">
+      <div class="dir-tag">${b.claimed ? '✓' : 'DAILY'}</div>
+      <div class="dir-body">
+        <div class="dir-k">DAILY DIRECTIVE · ${label}</div>
+        <div class="dir-t">${esc(b.directive.title)}</div>
+        <div class="dir-d">${esc(b.directive.desc)} · +${b.directive.xp} XP</div>
+      </div>
+      ${b.claimed
+        ? '<span class="dir-chip">BANKED</span>'
+        : b.done
+          ? `<button class="btn primary" data-act="claim-bonus">CLAIM +${b.directive.xp}</button>`
+          : `<span class="dir-chip">+${b.directive.xp} XP</span>`}
+    </div>`;
+}
+
+/* ---------------- share ---------------- */
+
+function shareLine() {
+  const level = levelOf(state.xp);
+  return `Level ${level} · Rank ${rankOf(level)} on THE SYSTEM — ${completedTotal()} quests cleared, ${computeStreak()}-day streak, ${state.xp} XP.`;
+}
+
+async function shareProgress() {
+  const url = location.origin + '/';
+  const text = `${shareLine()} Come level up with me.`;
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: 'THE SYSTEM — my hunter record', text, url });
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(`${text} ${url}`);
+      toast('Copied — paste it anywhere.', 'gold');
+    } else {
+      window.prompt('Copy your record:', `${text} ${url}`);
+    }
+    if (!state.meta.shared) {
+      state.meta = { ...(state.meta || {}), shared: true };
+      save();
+      renderProgress();
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    toast('Sharing is not available in this browser.', 'danger');
+  }
 }
 
 function renderAll() {
@@ -1365,6 +1608,14 @@ function openSettings() {
         <button class="btn" data-act="start-tour">SHOW TUTORIAL</button>
       </div>
 
+      <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">APP</h2><div class="line"></div></div>
+      <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
+        <span id="settingsInstall">${esc(typeof installStatusText === 'function' ? installStatusText() : 'Install THE SYSTEM for a full-screen, offline app.')}</span>
+      </p>
+      <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
+        <button class="btn" data-act="install-app">INSTALL APP</button>
+      </div>
+
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">DEVICE NOTIFICATIONS</h2><div class="line"></div></div>
       <p class="panel-sub" style="margin:0;font-size:12.5px;line-height:1.6">
         <span id="settingsPush">${esc(typeof pushStatusText === 'function' ? pushStatusText() : 'Off.')}</span>
@@ -1456,6 +1707,12 @@ const TOUR_STEPS = [
     view: 'today'
   },
   {
+    title: 'DAILY DIRECTIVE',
+    target: '#view-today .directive',
+    body: 'A new bonus objective every day — water, the workout, protein, meals or a weigh-in. Finish it, claim the XP. The achievements shelf in Progress tracks the bigger milestones.',
+    view: 'today'
+  },
+  {
     title: 'HYDRATION',
     target: '#view-today .panel',
     body: 'Tap +250, +500 or +750 ml as you drink. The ring fills towards your daily goal, and the reminder switch nags you every 90 minutes between 08:00 and 22:00.',
@@ -1487,7 +1744,7 @@ const TOUR_STEPS = [
   },
   {
     title: 'ALMOST THERE',
-    body: 'Two things worth doing now: turn on device notifications so reminders reach your phone with the app closed, and connect Google in Settings for one-tap sign-in. This tour lives in Settings → SHOW TUTORIAL whenever you want it again.',
+    body: 'Three things worth doing now: install the app from the bar at the bottom so it opens full screen from your home screen, turn on device notifications so reminders reach your phone with the app closed, and connect Google in Settings for one-tap sign-in. This tour lives in Settings → SHOW TUTORIAL whenever you want it again.',
     view: 'today'
   }
 ];
@@ -1621,6 +1878,7 @@ function endTour() {
   state.meta = { ...(state.meta || {}), tourDone: true };
   save();
   toast('Tour closed. Settings → SHOW TUTORIAL brings it back.');
+  if (typeof maybeShowInstallBar === 'function') setTimeout(maybeShowInstallBar, 1200);
 }
 
 window.addEventListener('resize', () => { if (tourActive) tourPlaceSpot(); });
@@ -1642,6 +1900,10 @@ document.addEventListener('click', async (e) => {
     case 'modal-close': closeModal(); break;
     case 'start-tour': closeModal(); startTour(); break;
     case 'link-google': location.href = '/api/auth/google/start?link=1'; break;
+    case 'install-app': if (typeof requestInstall === 'function') requestInstall(); break;
+    case 'install-dismiss': if (typeof dismissInstall === 'function') dismissInstall(); break;
+    case 'claim-bonus': claimBonus(); break;
+    case 'share-progress': shareProgress(); break;
     case 'tour-next': nextTourStep(); break;
     case 'tour-back': prevTourStep(); break;
     case 'tour-end': endTour(); break;
@@ -1807,8 +2069,37 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------------- boot ---------------- */
 
+/* The splash is in the HTML so it paints before this file even runs; this
+   only takes it away once the first screen is ready. */
+function dismissBoot() {
+  const boot = document.getElementById('boot');
+  if (!boot) return;
+  boot.classList.add('is-off');
+  setTimeout(() => { if (boot.parentNode) boot.parentNode.removeChild(boot); }, 700);
+}
+
+/* Home-screen shortcuts land here: /?view=progress, /?quick=water, … */
+function applyLaunchIntent() {
+  let params;
+  try {
+    params = new URLSearchParams(location.search);
+  } catch (err) {
+    return;
+  }
+  const view = params.get('view');
+  const quick = params.get('quick');
+  if (quick === 'water') addWater(250);
+  if (view && document.getElementById(`view-${view}`)) switchView(view);
+  if (quick === 'quest' || quick === 'weigh') switchView(quick === 'weigh' ? 'progress' : 'today');
+  if (view || quick) {
+    try { history.replaceState(null, '', location.pathname); } catch (err) { /* ignore */ }
+  }
+}
+
 ensureStartDate();
 renderAll();
+applyLaunchIntent();
+setTimeout(dismissBoot, 320);
 setTimeout(maybeStartTour, 1800);
 setInterval(checkWaterReminder, 30000);
 setInterval(renderTopbar, 60000);
