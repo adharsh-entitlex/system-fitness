@@ -18,7 +18,7 @@
 
 const SYNC_API = '/api';
 
-const sync = { online: null, busy: false, at: 0, error: '', suspend: false };
+const sync = { online: null, busy: false, at: 0, error: '', suspend: false, queued: false };
 let pushTimer = null;
 let adopting = false;
 
@@ -33,6 +33,7 @@ function syncView() {
     return auth.guest ? ['LOCAL ONLY · GUEST', 'is-offline'] : ['SIGN IN REQUIRED', 'is-error'];
   }
   if (sync.busy) return ['SYNCING…', ''];
+  if (sync.queued) return ['SAVED HERE · WAITING FOR NETWORK', 'is-offline'];
   if (sync.online === false) return ['LOCAL ONLY', 'is-offline'];
   if (sync.error) return [`SYNC ERROR · ${sync.error}`, 'is-error'];
   if (sync.at) return [`SYNCED · ${new Date(sync.at).toLocaleTimeString()}`, ''];
@@ -70,6 +71,41 @@ async function api(path, init) {
   const body = await res.json().catch(() => null);
   if (res.status === 401) onUnauthorized();
   return { ok: res.ok, status: res.status, body };
+}
+
+/* ---------------- offline outbox ----------------
+   When the server cannot be reached, the newest snapshot is handed to the
+   service worker (sw.js), which replays it on reconnect or through
+   Background Sync — even if this tab was closed first. The local record was
+   already saved, so nothing is lost by the page going away. */
+
+function serviceWorkerReady() {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return Promise.resolve(null);
+  return navigator.serviceWorker.ready.then((reg) => reg).catch(() => null);
+}
+
+async function queueOutbox(body) {
+  sync.queued = true;
+  try {
+    const reg = await serviceWorkerReady();
+    if (!reg || !reg.active) return;
+    reg.active.postMessage({ type: 'outbox-put', body });
+    if (reg.sync && reg.sync.register) {
+      reg.sync.register('system-outbox').catch(() => { /* no Background Sync */ });
+    }
+  } catch (err) {
+    /* no service worker: the retry-on-reconnect path still covers this tab */
+  }
+}
+
+async function clearOutbox() {
+  sync.queued = false;
+  try {
+    const reg = await serviceWorkerReady();
+    if (reg && reg.active) reg.active.postMessage({ type: 'outbox-clear' });
+  } catch (err) {
+    /* ignore */
+  }
 }
 
 async function probe() {
@@ -141,11 +177,12 @@ async function push(silent) {
 
   sync.busy = true;
   paintSync();
+  const payload = JSON.stringify({ state, updatedAt: Number((state.meta || {}).updatedAt) || Date.now() });
   try {
     const res = await api('/state', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state, updatedAt: Number((state.meta || {}).updatedAt) || Date.now() })
+      body: payload
     });
 
     if (res.status === 409) {
@@ -158,12 +195,15 @@ async function push(silent) {
       sync.online = true;
       sync.error = '';
       sync.at = Date.now();
+      clearOutbox();
       if (!silent) toast('Record pushed to the server.', 'gold');
     }
   } catch (err) {
-    // Network failure: keep working locally and retry when the server returns.
+    // Network failure: keep working locally, and leave the snapshot with the
+    // service worker so it is replayed even if this tab is closed first.
     sync.online = false;
-    if (!silent) toast(`Push failed: ${err.message}`, 'danger');
+    queueOutbox(payload);
+    if (!silent) toast(`Push failed: ${err.message}. Saved here — the server copy catches up on reconnect.`, 'danger');
   }
   sync.busy = false;
   paintSync();
@@ -261,11 +301,24 @@ async function afterAuthChange() {
 async function retrySync() {
   if (sync.busy || !canSync()) return;
   if (!auth.checked) await bootAuth();
-  if (sync.online === true && !sync.error) return;
+  if (sync.online === true && !sync.error && !sync.queued) return;
   if (await probe()) push(true);
 }
 
 window.addEventListener('online', retrySync);
+
+// The worker replayed a queued snapshot while this page was open.
+if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'outbox-flushed') {
+      sync.queued = false;
+      sync.online = true;
+      sync.at = Date.now();
+      paintSync();
+      toast('Queued changes reached the server.', 'gold');
+    }
+  });
+}
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) retrySync();
 });

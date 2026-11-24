@@ -104,6 +104,11 @@ function mergeStates(local, remote) {
     logs: mergeLogs(base.logs, other.logs),
     water: mergeWater(base.water, other.water),
     waterBonus: mergeKeys(base.waterBonus, other.waterBonus),
+    readiness: mergeKeys(base.readiness, other.readiness),
+    constraints: {
+      avoid: Array.from(new Set([...((base.constraints || {}).avoid || []), ...((other.constraints || {}).avoid || [])])),
+      swaps: mergeKeys((base.constraints || {}).swaps, (other.constraints || {}).swaps)
+    },
     weights: mergeKeys(base.weights, other.weights),
     measures: mergeKeys(base.measures, other.measures),
     meals: mergeKeys(base.meals, other.meals),

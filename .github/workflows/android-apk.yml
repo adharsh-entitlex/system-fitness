@@ -121,17 +121,38 @@ jobs:
           if-no-files-found: error
 
       # A release asset URL is permanent; an artifact URL expires. Set the
-      # release_tag input to attach this build to a release (create it first
-      # with `gh release create <tag> --title ... --notes ...`).
+      # release_tag input to attach this build to a release. The release is
+      # created when it does not exist yet — a tag typed into the run dialog
+      # should not leave the APK stranded in an expiring artifact.
       - name: Attach the APK to a release
-        if: inputs.release_tag != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          VERSION=$(node -p "require('./android/twa-manifest.json').appVersionName")
-          cp android/app-release-signed.apk "THE-SYSTEM-$VERSION.apk"
+          set -euo pipefail
+          if [ -z "${RELEASE_TAG:-}" ]; then
+            echo "No release_tag given; the APK stays in the workflow artifact."
+            exit 0
+          fi
+          VERSION=$(node -p "require('./twa-manifest.json').appVersionName")
+          APK=$(ls -1 ./*-signed.apk 2>/dev/null | head -n 1 || true)
+          if [ -z "$VERSION" ] || [ -z "$APK" ]; then
+            echo "::error::Could not find the signed APK or the version in twa-manifest.json."
+            ls -la
+            exit 1
+          fi
+          cp "$APK" "THE-SYSTEM-$VERSION.apk"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists; replacing its APK asset."
+          else
+            echo "Release $RELEASE_TAG does not exist yet; creating it."
+            gh release create "$RELEASE_TAG" \
+              --title "THE SYSTEM $VERSION" \
+              --notes "The Android app, signed with the permanent key. Installs over earlier versions."
+          fi
           echo "Attaching THE-SYSTEM-$VERSION.apk to $RELEASE_TAG"
           gh release upload "$RELEASE_TAG" "THE-SYSTEM-$VERSION.apk" --clobber
           gh release view "$RELEASE_TAG" --json assets \
             --jq '.assets[] | "\(.name)  \(.size) bytes  \(.url)"'
+        working-directory: android

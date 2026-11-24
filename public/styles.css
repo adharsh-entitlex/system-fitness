@@ -1527,6 +1527,7 @@ body.is-locked .install-bar { display: none; }
 }
 .load-advice.is-good { color: #7fffd4; }
 .load-advice.is-warn { color: var(--gold); }
+.load-row .lift-bars { grid-column: 1 / -1; margin-top: 6px; }
 .panel-sub.warn { color: var(--gold); }
 .custom-session textarea, .modal textarea { font-family: var(--font-body); }
 
@@ -1537,3 +1538,27 @@ body.is-locked .install-bar { display: none; }
 @media (prefers-contrast: more) {
   :root { --muted: #a8c2dd; }
 }
+
+/* ---------------- coach: readiness, swaps, lift trends ---------------- */
+.coach-readiness{margin-bottom:4px}
+.readiness-panel{border-color:rgba(95,230,255,.22)}
+.readiness-line{margin:8px 0 0;font-size:11.5px;letter-spacing:.08em;color:#8ea9c9;font-variant-numeric:tabular-nums}
+.readiness-line.is-good{color:#7fffd4}
+.panel-sub.is-good{color:#7fffd4}
+.lift-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.lift-row{padding:10px 11px;background:rgba(8,18,34,.55);border:1px solid rgba(95,165,255,.16)}
+.lift-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.lift-name{font-family:var(--font-display);font-size:10px;letter-spacing:.16em;color:#dff2ff}
+.lift-now{font-size:13px;color:#5fe6ff;font-variant-numeric:tabular-nums}
+.lift-now small{font-size:9px;letter-spacing:.12em;color:#7f9bbd}
+.lift-bars{display:flex;align-items:center;gap:10px;margin-top:8px}
+.spark{flex:1 1 auto;height:30px;min-width:60px}
+.spark path{fill:none;stroke:#5fe6ff;stroke-width:1.6;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round;filter:drop-shadow(0 0 4px rgba(95,230,255,.4))}
+.lift-change{flex:0 0 auto;font-size:10px;letter-spacing:.1em;color:#8ea9c9;font-variant-numeric:tabular-nums}
+.lift-change.is-good{color:#7fffd4}
+.lift-change.is-warn{color:var(--gold)}
+.swap-row{gap:8px}
+.swap-tag{font-size:9px;letter-spacing:.1em;color:#7f9bbd;text-align:right;max-width:130px}
+.swap-row .btn.sm{padding:5px 10px;font-size:9px}
+.swap-avoids{display:grid;gap:6px;margin:0 0 12px}
+.swap-switch{margin:0}

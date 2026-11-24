@@ -36,6 +36,25 @@ a CI-built Android app.
 - **Daily directive** — one rotating objective a day (hydration, workout,
   protein, meals or weigh-in) worth bonus XP, claimable once the condition is
   met. Settings can't fake it; the check reads the day's real log.
+- **Readiness check-in** — three questions (sleep, soreness, energy) become a
+  0–100 score for the day, and the set logger prints today's weight: primed
+  adds a step, a wrecked score takes 10% off or sends you to a rest day.
+- **Movement swaps** — equipment busy or a joint unhappy? Any exercise can be
+  replaced with one that trains the same pattern (horizontal push, hinge,
+  vertical pull…), filtered by your equipment and by the reasons you flag
+  (overhead pressing, spinal load, deep knee bend, shoulder strain). Choices
+  are remembered.
+- **Lift progress** — the LOAD CHECK panel is the one estimated-1RM view: a
+  sparkline and change per lift, the next-load advice, and a timeline of recent
+  personal records in the same block.
+- **Recap card** — one shareable image of the level, streak, last 28 days of
+  sessions, records and top lifts, drawn on the device.
+- **Spreadsheet exports** — the JSON backup restores everything; the two CSV
+  buttons export every logged set and every weigh-in for a spreadsheet.
+- **Offline writes** — a change made with no connection is handed to the
+  service worker's outbox and replayed on reconnect (Background Sync where the
+  browser has it), so work logged in a basement gym still reaches the server
+  even if the tab was closed first.
 - **Achievements** — eleven milestones (streaks, levels, quests, hydration,
   weigh-ins, meals, sharing) that unlock once and pay XP, shown as a badge
   shelf in the Hunter Record.
@@ -329,7 +348,9 @@ gh release create v1.7.0 --title "THE SYSTEM 1.7.0" --notes "Signed with the sta
 
 Then **Actions → Build Android APK → Run workflow**, `release_tag` = `v1.7.0`.
 The job uploads `THE-SYSTEM-1.7.0.apk` (named from `appVersionName`) to that
-release. Name each later release after its version (`v1.8.0`, …) and run the
+release. If the tag does not exist yet the job creates the release itself, so
+a version cannot be stranded in an expiring artifact because a release was
+forgotten. Name each later release after its version (`v1.8.0`, …) and run the
 workflow the same way.
 
 These repository secrets are set on the repo, so every build from now on is
@@ -396,5 +417,6 @@ public/     index.html, styles.css, app.js, nutrition.js, foods.js,
 worker/     index.js (router), auth.js (accounts/OAuth), push.js (web push)
 server/     server.mjs — local backend
 scripts/    build-worker.mjs, make-vapid.mjs, make-icons.mjs, test-push.mjs
+public/coach.js  readiness, swaps, lift trends, recap card, CSV exports
 android/    twa-manifest.json
 ```

@@ -154,8 +154,10 @@ function openSetLogger(key, index) {
     </div>
     <p class="plate-line">${esc(plateLine(lastSet ? lastSet.weight : (Number(ex.weight) || 0)))}</p>
     ${warmupHtml(lastSet ? lastSet.weight : (Number(ex.weight) || 0))}
+    ${typeof readinessTargetHtml === 'function' ? readinessTargetHtml(lastSet ? lastSet.weight : (Number(ex.weight) || 0)) : ''}
     <div class="modal-actions">
       <button class="btn primary" data-act="set-add" data-key="${key}" data-i="${index}">LOG THIS SET</button>
+      <button class="btn ghost" data-act="swap-open" data-key="${key}" data-i="${index}">SWAP</button>
       <button class="btn ghost" data-act="modal-close">DONE</button>
     </div>
   `);
@@ -344,6 +346,7 @@ function renderLiveSession() {
     </div>
     <p class="plate-line">${esc(plateLine(lastSet ? lastSet.weight : (Number(ex.weight) || 0)))}</p>
     ${warmupHtml(lastSet ? lastSet.weight : (Number(ex.weight) || 0))}
+    ${typeof readinessTargetHtml === 'function' ? readinessTargetHtml(lastSet ? lastSet.weight : (Number(ex.weight) || 0)) : ''}
     <div class="live-row">
       <button class="btn primary" data-act="live-set" data-key="${key}">LOG SET + REST</button>
       <label class="field live-rest-pick"><span class="lbl">REST</span>
@@ -353,6 +356,7 @@ function renderLiveSession() {
     <div class="modal-actions">
       <button class="btn" data-act="live-prev" data-key="${key}">BACK</button>
       <button class="btn" data-act="live-next" data-key="${key}">NEXT MOVE</button>
+      <button class="btn ghost" data-act="swap-open" data-key="${key}" data-i="${index}">SWAP</button>
       <button class="btn ghost" data-act="live-end" data-key="${key}">END SESSION</button>
     </div>
   `);
@@ -1009,21 +1013,36 @@ function loadCheckHtml() {
           ? 'LOG ONE MORE SESSION'
           : `HOLD ${verdict.best} KG UNTIL REPS CLIMB`;
     const tone = verdict.status === 'up' ? 'is-good' : verdict.status === 'stall' ? 'is-warn' : '';
+    const change = typeof liftChangePct === 'function' ? liftChangePct(verdict.series, 4) : null;
+    const path = typeof sparklinePath === 'function'
+      ? sparklinePath(verdict.series.map((point) => point.e1rm), 120, 30)
+      : '';
+    const changeTone = change == null ? '' : change > 0 ? 'is-good' : change < 0 ? 'is-warn' : '';
+    const trend = change == null ? '' : `<span class="lift-change ${changeTone}">${change > 0 ? '+' : ''}${change}% in ${Math.min(verdict.series.length - 1, 4)} sessions</span>`;
     return `<li class="load-row">
       <span class="load-name">${esc(name)}</span>
       <span class="load-est">${esc(est)} · ${verdict.sessions} session${verdict.sessions === 1 ? '' : 's'}</span>
       <em class="load-advice ${tone}">${advice}</em>
+      ${path ? `<div class="lift-bars"><svg class="spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true"><path d="${path}" /></svg>${trend}</div>` : ''}
     </li>`;
   }).join('');
+
+  const prs = typeof recentPrs === 'function' ? recentPrs(5) : [];
+  const prRows = prs.map((pr) => `<li class="set-row">
+      <span class="set-no">${esc(shortDate(parseKey(pr.key)))}</span>
+      <span class="set-val">${esc(pr.name)} · ${pr.weight} kg × ${pr.reps}</span>
+      <span class="swap-tag">${pr.gain > 0 ? `+${pr.gain} KG` : 'FIRST'}</span>
+    </li>`).join('');
 
   return `
     <div class="section-head">
       <h2>LOAD CHECK</h2>
       <div class="line"></div>
-      <span class="hint">from your logged sets</span>
+      <span class="hint">estimated 1RM over time</span>
     </div>
     <div class="panel"><ul class="load-list">${lines}</ul>
-      <p class="panel-sub" style="margin:10px 0 0;line-height:1.6">Estimated from weight × reps (Epley). Three flat sessions in a row earn a deload, not more willpower.</p>
+      <p class="panel-sub" style="margin:10px 0 0;line-height:1.6">Each line is the best estimated 1RM of that lift per session (Epley). A rising line with flat bodyweight is the whole game — and three flat sessions in a row earn a deload, not more willpower.</p>
+      ${prRows ? `<div class="section-head" style="margin:16px 0 8px"><h2 style="font-size:10px">RECORD TIMELINE</h2><div class="line"></div><span class="hint">newest first</span></div><ul class="set-list">${prRows}</ul>` : ''}
     </div>`;
 }
 

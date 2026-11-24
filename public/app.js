@@ -71,6 +71,11 @@ function defaultState() {
     // Days deliberately taken off (illness, travel). They are neutral in the
     // streak instead of breaking it.
     restDays: {},
+    // Morning check-in: sleep / soreness / energy per day, each 1–5. It sets
+    // the load suggested for that day's session.
+    readiness: {},
+    // Movements to avoid, and swaps already chosen (exercise name -> name).
+    constraints: { avoid: [], swaps: {} },
     // In-progress live session, so a reload or a killed tab resumes it.
     live: null,
     // Monthly roll-up of days older than the detail window.
@@ -107,6 +112,11 @@ function normalizeState(parsed) {
     weights: src.weights && typeof src.weights === 'object' ? src.weights : {},
     measures: src.measures && typeof src.measures === 'object' ? src.measures : {},
     restDays: src.restDays && typeof src.restDays === 'object' ? src.restDays : {},
+    readiness: src.readiness && typeof src.readiness === 'object' ? src.readiness : {},
+    constraints: {
+      avoid: Array.isArray((src.constraints || {}).avoid) ? src.constraints.avoid.filter((tag) => typeof tag === 'string') : [],
+      swaps: (src.constraints || {}).swaps && typeof src.constraints.swaps === 'object' ? src.constraints.swaps : {}
+    },
     archive: src.archive && typeof src.archive === 'object' ? src.archive : {},
     live: src.live && typeof src.live === 'object' ? src.live : null,
     reminders: { ...base.reminders, ...(src.reminders || {}) },
@@ -1729,7 +1739,10 @@ function openSettings() {
       <div class="modal-actions" style="margin-top:0;justify-content:flex-start">
         <button class="btn" data-act="export-backup">EXPORT BACKUP</button>
         <button class="btn ghost" data-act="import-backup">IMPORT BACKUP</button>
+        <button class="btn ghost" data-act="export-csv-sets">SETS CSV</button>
+        <button class="btn ghost" data-act="export-csv-weight">WEIGH-INS CSV</button>
       </div>
+      <p class="panel-sub" style="margin:6px 0 0;font-size:12px;line-height:1.6">The JSON backup restores everything. The CSV files are for a spreadsheet — every logged set by date, and every weigh-in.</p>
       <input type="file" accept="application/json,.json" data-backup-file hidden />
 
       <div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:10px">ACCOUNT</h2><div class="line"></div></div>

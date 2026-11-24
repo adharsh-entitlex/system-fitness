@@ -71,6 +71,7 @@ function makeContext() {
   vm.runInContext(app, ctx, { filename: 'app.js' });
   vm.runInContext(read('merge.js'), ctx, { filename: 'merge.js' });
   vm.runInContext(read('training.js'), ctx, { filename: 'training.js' });
+  vm.runInContext(read('coach.js'), ctx, { filename: 'coach.js' });
   return ctx;
 }
 
@@ -306,6 +307,138 @@ check('old detail rolls into a monthly summary', () => {
   assert.equal(out.archive.sessions, 1);
   assert.equal(out.archive.load, 480);
   assert.equal(out.water, undefined);
+});
+
+/* ---------------- readiness, swaps, analytics ---------------- */
+
+check('readiness scores sleep, energy and soreness into one number', () => {
+  assert.equal(run('readinessScore({ sleep: 5, energy: 5, soreness: 1 })'), 100);
+  // Worst answers still score 20: three 1s average 3/15 before the percentage.
+  assert.equal(run('readinessScore({ sleep: 1, energy: 1, soreness: 5 })'), 20);
+  assert.equal(run('readinessScore(null)'), null);
+});
+
+check('a wrecked check-in recommends less load than a primed one', () => {
+  const primed = run('readinessAdvice(100)');
+  const wrecked = run('readinessAdvice(20)');
+  assert.equal(primed.label, 'PRIMED');
+  assert.equal(wrecked.label, 'RECOVER');
+  // A hard day is not an error state: the low score keeps the neutral tone.
+  assert.equal(wrecked.tone, '');
+  assert.ok(wrecked.factor < 1);
+  assert.ok(primed.factor >= 1);
+});
+
+check('readiness moves the suggested weight and rounds to a plate step', () => {
+  const out = run(`(() => {
+    state = defaultState();
+    state.readiness[todayKey()] = { sleep: 5, energy: 5, soreness: 1 };
+    const primed = readinessTargetHtml(100);
+    state.readiness[todayKey()] = { sleep: 1, energy: 1, soreness: 5 };
+    const wrecked = readinessTargetHtml(100);
+    state.readiness = {};
+    return { primed, wrecked, none: readinessTargetHtml(100) };
+  })()`);
+  assert.match(out.primed, /TODAY 105 KG/);
+  assert.match(out.wrecked, /TODAY 85 KG/);
+  assert.equal(out.none, '');
+});
+
+check('an exercise maps to its movement pattern', () => {
+  assert.equal(run("patternOf('Bench Press')"), 'horiz-push');
+  assert.equal(run("patternOf('Romanian Deadlift')"), 'hinge');
+  assert.equal(run("patternOf('Lat Pulldown')"), 'pull');
+  assert.equal(run("patternOf('Leg Extension')"), 'squat');
+  assert.equal(run("patternOf('Calf Raise')"), 'calves');
+});
+
+check('swap candidates follow equipment and the avoided reasons', () => {
+  const out = run(`(() => {
+    state = defaultState();
+    state.meta.program = { equipment: 'home', experience: 'beginner', days: 3 };
+    const plain = swapCandidates('Bench Press', [], 'home').map((row) => row.name);
+    const noShoulder = swapCandidates('Bench Press', ['shoulder'], 'home').map((row) => row.name);
+    return { plain, noShoulder };
+  })()`);
+  assert.ok(out.plain.includes('Dumbbell Floor Press'));
+  assert.ok(!out.plain.includes('Back Squat'));
+  assert.ok(!out.noShoulder.includes('Dumbbell Floor Press'));
+});
+
+check('the sparkline fits every point inside its box', () => {
+  const path = run('sparklinePath([10, 20, 15, 30], 120, 30)');
+  assert.match(path, /^M0\.0 /);
+  assert.equal((path.match(/L/g) || []).length, 3);
+  assert.equal(run('sparklinePath([5], 120, 30)'), '');
+});
+
+check('the load check is the only e1RM view, sparkline and records included', () => {
+  const html = run(`(() => {
+    state = defaultState();
+    state.templates = [{ id: 'squat-day', name: 'SQUAT DAY', exercises: [{ name: 'Back Squat' }] }];
+    state.logs = {
+      '2026-01-02': { status: 'completed', exercises: [{ name: 'Back Squat', log: [{ reps: 5, weight: 100 }] }] },
+      '2026-01-09': { status: 'completed', exercises: [{ name: 'Back Squat', log: [{ reps: 5, weight: 105 }] }] }
+    };
+    return loadCheckHtml();
+  })()`);
+  assert.match(html, /LOAD CHECK/);
+  assert.match(html, /class="spark"/);
+  assert.match(html, /RECORD TIMELINE/);
+  assert.doesNotMatch(html, /LIFT PROGRESS/);
+});
+
+check('the set export is a CSV with one row per logged set', () => {
+  const csv = run(`(() => {
+    state = defaultState();
+    state.logs['2026-01-02'] = { status: 'completed', templateId: 'push', exercises: [
+      { name: 'Bench Press', sets: 3, reps: 8, weight: 60, log: [{ reps: 8, weight: 60 }, { reps: 7, weight: 62.5 }] }
+    ] };
+    return csvOfSets();
+  })()`);
+  const lines = csv.trim().split('\n');
+  assert.equal(lines[0], 'date,workout,exercise,set,weight_kg,reps,volume_kg');
+  assert.equal(lines.length, 3);
+  assert.match(lines[1], /2026-01-02,PUSH DAY,Bench Press,1,60,8,480/);
+});
+
+check('the recap counts only the last four weeks', () => {
+  const out = run(`(() => {
+    state = defaultState();
+    state.logs = {
+      [keyOf(addDays(new Date(), -2))]: { status: 'completed', exercises: [
+        { name: 'Back Squat', sets: 3, reps: 5, weight: 100, log: [{ reps: 5, weight: 100 }] }
+      ] },
+      [keyOf(addDays(new Date(), -200))]: { status: 'completed', exercises: [] }
+    };
+    const r = recapStats();
+    return { sessions: r.sessions, volume: r.volume, lifts: r.lifts.length };
+  })()`);
+  assert.equal(out.sessions, 1);
+  assert.equal(out.volume, 500);
+  assert.equal(out.lifts, 1);
+});
+
+check('merging keeps readiness days and swap choices from both devices', () => {
+  const out = run(`(() => {
+    const mine = defaultState();
+    mine.meta.updatedAt = 4000;
+    mine.readiness['2026-01-01'] = { sleep: 4, energy: 4, soreness: 2 };
+    mine.constraints = { avoid: ['knee'], swaps: { 'bench press': 'Push-up' } };
+    const theirs = defaultState();
+    theirs.meta.updatedAt = 3000;
+    theirs.readiness['2026-01-02'] = { sleep: 2, energy: 2, soreness: 4 };
+    theirs.constraints = { avoid: ['overhead'], swaps: { 'back squat': 'Leg Press' } };
+    const merged = mergeStates(mine, theirs);
+    return {
+      days: Object.keys(merged.readiness).length,
+      avoid: Array.from(merged.constraints.avoid).sort(),
+      swaps: Object.keys(merged.constraints.swaps).length
+    };
+  })()`);
+  assert.equal(out.days, 2);
+  assert.deepEqual(Array.from(out.avoid), ['knee', 'overhead']);
+  assert.equal(out.swaps, 2);
 });
 
 /* ---------------- report ---------------- */
